@@ -1,22 +1,14 @@
-<<<<<<< HEAD
-import { useState, useRef, useEffect } from "react";
-=======
 import { useState, useRef, useEffect, useMemo } from "react";
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
 
 // ── CONSTANTS ──────────────────────────────────────────────────────────────
 const C30 = Math.cos(Math.PI / 6);
 const TL = 1360, TW = 245;
-<<<<<<< HEAD
-const PH = 15, MAX_H = 205, MAX_KG = 1000;
-=======
 const PALLET_BASE_H = 15;
 const DEFAULT_MAX_H = 205;
 const DEFAULT_MAX_KG = 1000;
 const GRID_STEP_CM = 2;
 const LS_PALLETS_KEY = "palet-opt-custom-pallets";
 const LS_SKUS_KEY = "palet-opt-custom-skus";
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
 
 const PALLET_TYPES = [
   { label: "80 × 120 cm",  a: 80,  b: 120 },
@@ -45,8 +37,6 @@ const alpha = (hex, a) => {
   return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
 };
 
-<<<<<<< HEAD
-=======
 const THEME = {
   pageBg: "#122841",
   cardBg: "#1D395A",
@@ -95,8 +85,6 @@ function findFreeSpot(placements, w, h) {
   }
   return null;
 }
-
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
 // ── FLAT ORIENTATION RULE ──────────────────────────────────────────────────
 function flatOrient(en, boy, yuk) {
   const [s, m, l] = [+en, +boy, +yuk].sort((a, b) => a - b);
@@ -105,51 +93,129 @@ function flatOrient(en, boy, yuk) {
 
 // ── CSV PARSER ─────────────────────────────────────────────────────────────
 function parseCSV(text) {
-  const lines = text.trim().split(/\r?\n/);
+  const cleaned = text.replace(/^\uFEFF/, "").trim();
+  const lines = cleaned.split(/\r?\n/);
   if (lines.length < 2) return [];
-  const hdrs = lines[0].split(",").map(h => h.trim());
+  const delimCandidates = [",", ";", "\t", "|"];
+  const scoreDelim = (d) => {
+    const h = lines[0].split(d).length;
+    const r = (lines[1] || "").split(d).length;
+    return Math.max(h, r);
+  };
+  const delim = delimCandidates.reduce((best, d) => scoreDelim(d) > scoreDelim(best) ? d : best, ",");
+  const parseRow = (line) => {
+    const out = [];
+    let cur = "";
+    let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "\"") {
+        if (inQ && line[i + 1] === "\"") {
+          cur += "\"";
+          i++;
+        } else {
+          inQ = !inQ;
+        }
+        continue;
+      }
+      if (ch === delim && !inQ) {
+        out.push(cur.trim());
+        cur = "";
+      } else {
+        cur += ch;
+      }
+    }
+    out.push(cur.trim());
+    return out.map((v) => v.replace(/^"(.*)"$/, "$1").trim());
+  };
+  const norm = (s) => s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ı/g, "i")
+    .replace(/[^\w]+/g, " ")
+    .trim();
+  const hdrs = parseRow(lines[0]).map(norm);
+  const fallbackIndexByName = (name) => {
+    const map = { en: 3, boy: 4, yuk: 5, kg: 6, sku: 1, parent: 0, paket: 2 };
+    return map[name] ?? -1;
+  };
   const fi = (...kws) => {
     for (const kw of kws) {
-      const kwl = kw.toLowerCase();
+      const kwl = norm(kw);
       const i = hdrs.findIndex(h => {
-        const first = h.toLowerCase().trim().split(/[\s(,_]/)[0];
-        return first === kwl;
+        const first = h.split(/\s+/)[0];
+        return first === kwl || h.includes(kwl);
       });
       if (i >= 0) return i;
     }
-    return -1;
+    return fallbackIndexByName(kws[0]);
   };
-  const iP=fi("parent"), iS=fi("sku"), iQ=fi("paket"),
-        iE=fi("en"),     iB=fi("boy"), iY=fi("yukseklik","yükseklik","yuk"),
-        iK=fi("kg");
+  const iP = fi("parent", "urun", "urun adi", "product", "name");
+  const iS = fi("sku", "kod", "stok kodu", "stock");
+  const iQ = fi("paket", "paket sayisi", "adet", "qty", "quantity");
+  const iE = fi("en", "genislik", "width");
+  const iB = fi("boy", "uzunluk", "length");
+  const iY = fi("yukseklik", "yuk", "height");
+  const iK = fi("kg", "agirlik", "weight");
   return lines.slice(1)
     .filter(l => l.trim())
     .map((line, idx) => {
-      const v = line.split(",").map(s => s.trim());
+      const v = parseRow(line);
       const get = i => (i >= 0 ? v[i] : "") || "";
+      const num = (x) => {
+        const s = String(x).trim().replace(/\s/g, "");
+        if (!s) return 0;
+        if (s.includes(",") && s.includes(".")) {
+          // 1.234,56 or 1,234.56 -> normalize to dot decimal
+          const lastComma = s.lastIndexOf(",");
+          const lastDot = s.lastIndexOf(".");
+          if (lastComma > lastDot) return parseFloat(s.replace(/\./g, "").replace(",", "."));
+          return parseFloat(s.replace(/,/g, ""));
+        }
+        return parseFloat(s.replace(",", "."));
+      };
       return {
         sku:  get(iS) || `SKU-${idx + 1}`,
         name: get(iP) || get(iS) || `Ürün ${idx + 1}`,
         qty:  parseInt(get(iQ))   || 0,
-        en:   parseFloat(get(iE)) || 0,
-        boy:  parseFloat(get(iB)) || 0,
-        yuk:  parseFloat(get(iY)) || 0,
-        kg:   parseFloat(get(iK)) || 0,
+        en:   num(get(iE)) || 0,
+        boy:  num(get(iB)) || 0,
+        yuk:  num(get(iY)) || 0,
+        kg:   num(get(iK)) || 0,
       };
     })
     .filter(s => s.en > 0 && s.boy > 0 && s.yuk > 0);
 }
 
+function parseCSVLoose(text) {
+  const cleaned = text.replace(/^\uFEFF/, "").trim();
+  const lines = cleaned.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return [];
+  const delim = (lines[0].includes(";") && !lines[0].includes(",")) ? ";" : ",";
+  const num = (x) => {
+    const s = String(x || "").trim().replace(/\s/g, "");
+    if (!s) return 0;
+    return parseFloat(s.replace(",", "."));
+  };
+  return lines.slice(1).map((line, idx) => {
+    const v = line.split(delim).map((x) => x.trim());
+    return {
+      sku: v[1] || `SKU-${idx + 1}`,
+      name: v[0] || v[1] || `Ürün ${idx + 1}`,
+      qty: parseInt(v[2]) || 0,
+      en: num(v[3]),
+      boy: num(v[4]),
+      yuk: num(v[5]),
+      kg: num(v[6]),
+    };
+  }).filter((s) => s.en > 0 && s.boy > 0 && s.yuk > 0);
+}
+
 // ── PALLET PACKING ─────────────────────────────────────────────────────────
-<<<<<<< HEAD
-function packPallet(bL, bW, bH, pA, pB, oh) {
-  const eA = pA + 2 * oh, eB = pB + 2 * oh;
-  const layers = Math.max(1, Math.floor((MAX_H - PH) / bH));
-=======
 function packPallet(bL, bW, bH, pA, pB, oh, maxH, palletBaseH = PALLET_BASE_H) {
   const eA = pA + 2 * oh, eB = pB + 2 * oh;
   const layers = Math.max(1, Math.floor((maxH - palletBaseH) / bH));
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
   const [c1, r1] = [Math.floor(eA / bL), Math.floor(eB / bW)];
   const [c2, r2] = [Math.floor(eA / bW), Math.floor(eB / bL)];
   const rot = c2 * r2 > c1 * r1;
@@ -226,11 +292,7 @@ function IsoBox({ x, y, z, w, d, h, col, s, bf = 1 }) {
 }
 
 // ── PALLET ISO VIEW ────────────────────────────────────────────────────────
-<<<<<<< HEAD
-function PalletView({ sku, pa, pb, oh, col, pack }) {
-=======
 function PalletView({ sku, pa, pb, oh, col, pack, disabledBoxes, onToggleBox }) {
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
   const { bH, bW, bL } = flatOrient(sku.en, sku.boy, sku.yuk);
   const { cols, rows, layers, boxL, boxW } = pack;
 
@@ -244,11 +306,7 @@ function PalletView({ sku, pa, pb, oh, col, pack, disabledBoxes, onToggleBox }) 
   const wxMax = Math.max(pa, offX + stackL);
   const wyMin = Math.min(0, offY);
   const wyMax = Math.max(pb, offY + stackD);
-<<<<<<< HEAD
-  const wzMax = PH + layers * bH;
-=======
   const wzMax = PALLET_BASE_H + layers * bH;
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
 
   const span = (wxMax - wxMin) + (wyMax - wyMin);
   const S = Math.min(2.5, Math.max(0.52, 330 / Math.max(1, span * C30)));
@@ -277,11 +335,7 @@ function PalletView({ sku, pa, pb, oh, col, pack, disabledBoxes, onToggleBox }) 
           boxList.push({
             x: offX + cx * boxL,
             y: offY + ry * boxW,
-<<<<<<< HEAD
-            z: PH + ly * bH,
-=======
             z: PALLET_BASE_H + ly * bH,
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
             bf,
             key: `${ly}-${ry}-${cx}`,
           });
@@ -293,11 +347,7 @@ function PalletView({ sku, pa, pb, oh, col, pack, disabledBoxes, onToggleBox }) 
 
   // Pallet edge dashed line (visible whenever overhang is enabled)
   const ohLine = oh > 0
-<<<<<<< HEAD
-    ? [[0,0,PH],[pa,0,PH],[pa,pb,PH],[0,pb,PH],[0,0,PH]]
-=======
     ? [[0,0,PALLET_BASE_H],[pa,0,PALLET_BASE_H],[pa,pb,PALLET_BASE_H],[0,pb,PALLET_BASE_H],[0,0,PALLET_BASE_H]]
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
         .map(([x, y, z]) => toIso(x, y, z, S).join(",")).join(" ")
     : null;
 
@@ -315,21 +365,6 @@ function PalletView({ sku, pa, pb, oh, col, pack, disabledBoxes, onToggleBox }) 
         <ellipse cx={scx} cy={scy + 7}
           rx={(pa + pb) * C30 * S * 0.42} ry={(pa + pb) * S * 0.085}
           fill="rgba(0,0,0,0.28)" filter="url(#ps-shadow)" />
-<<<<<<< HEAD
-        <IsoBox x={0} y={0} z={0} w={pa} d={pb} h={PH} col="#7B5B1C" s={S} bf={1} />
-        {[pa * 0.33, pa * 0.66].map((lx, i) => {
-          const [x1, y1] = toIso(lx, 0, PH, S);
-          const [x2, y2] = toIso(lx, pb, PH, S);
-          return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
-            stroke="rgba(0,0,0,0.11)" strokeWidth={0.8} />;
-        })}
-        {boxList.map(b => (
-          <IsoBox key={b.key} x={b.x} y={b.y} z={b.z}
-            w={boxL} d={boxW} h={bH} col={col} s={S} bf={b.bf} />
-        ))}
-        {(cols === 0 || rows === 0) && (
-          <text x={toIso(pa/2, pb/2, PH+10, S)[0]} y={toIso(pa/2, pb/2, PH+10, S)[1]}
-=======
         <IsoBox x={0} y={0} z={0} w={pa} d={pb} h={PALLET_BASE_H} col="#7B5B1C" s={S} bf={1} />
         {[pa * 0.33, pa * 0.66].map((lx, i) => {
           const [x1, y1] = toIso(lx, 0, PALLET_BASE_H, S);
@@ -352,7 +387,6 @@ function PalletView({ sku, pa, pb, oh, col, pack, disabledBoxes, onToggleBox }) 
         })}
         {(cols === 0 || rows === 0) && (
           <text x={toIso(pa/2, pb/2, PALLET_BASE_H+10, S)[0]} y={toIso(pa/2, pb/2, PALLET_BASE_H+10, S)[1]}
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
             textAnchor="middle" fontSize={11} fill="#F87171" fontWeight={700}>
             ⚠ Ürün Palete Sığmıyor
           </text>
@@ -365,19 +399,6 @@ function PalletView({ sku, pa, pb, oh, col, pack, disabledBoxes, onToggleBox }) 
 }
 
 // ── TRUCK MAP (DETAILED: pallet + package footprint, in 3 layered passes) ──
-<<<<<<< HEAD
-function TruckMap({ placements, col, fpA, fpB }) {
-  const SC = 0.46;
-  const tw = TL * SC, th = TW * SC;
-  const PL = 38, PT = 8;
-
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <svg width={tw + PL + 10} height={th + PT + 22} style={{ display: "block" }}>
-        <g transform={`translate(${PL},${PT})`}>
-          <rect x={0} y={0} width={tw} height={th}
-            fill="#060F1C" stroke="#1B3354" strokeWidth={1.5} rx={2} />
-=======
 function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col, fpA, fpB, theme }) {
   const SC = 0.61;
   const tw = TL * SC, th = TW * SC;
@@ -506,7 +527,6 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
               />
             );
           })}
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
           <rect x={0} y={0} width={tw} height={th} fill="rgba(239,68,68,0.05)" />
           <rect x={0} y={0}        width={tw} height={4 * SC} fill="#192A3A" />
           <rect x={0} y={th-4*SC} width={tw} height={4 * SC} fill="#192A3A" />
@@ -515,12 +535,6 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
           {placements.map((p, i) => {
             const px = p.x*SC, py = p.y*SC, pw = p.w*SC, ph = p.h*SC;
             const longHoriz = pw >= ph;
-<<<<<<< HEAD
-            return (
-              <g key={`pal-${i}`}>
-                <rect x={px+0.4} y={py+0.4} width={pw-0.8} height={ph-0.8}
-                  fill="#7B5B1C" stroke="#3D2D0E" strokeWidth={0.5} rx={1.5} />
-=======
             const isSelected = selectedIds.includes(p.id);
             return (
               <g
@@ -530,7 +544,6 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
               >
                 <rect x={px+0.4} y={py+0.4} width={pw-0.8} height={ph-0.8}
                   fill="#7B5B1C" stroke={isSelected ? "#FCD34D" : "#3D2D0E"} strokeWidth={isSelected ? 2.1 : 0.5} rx={1.5} />
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
                 {[0.25, 0.5, 0.75].map((t, j) => longHoriz ? (
                   <line key={j} x1={px+pw*t} y1={py+1.5} x2={px+pw*t} y2={py+ph-1.5}
                     stroke="rgba(0,0,0,0.30)" strokeWidth={0.4} />
@@ -552,15 +565,9 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
             const pkw = fpL * SC;
             const pkh = fpW * SC;
             return (
-<<<<<<< HEAD
-              <rect key={`pkg-${i}`} x={pkx} y={pky} width={pkw} height={pkh}
-                fill={alpha(col, 0.74)} stroke={shade(col, 0.5)}
-                strokeWidth={0.7} rx={1} />
-=======
               <rect key={`pkg-${p.id}`} x={pkx} y={pky} width={pkw} height={pkh}
                 fill={alpha(col, 0.74)} stroke={shade(col, 0.5)}
                 strokeWidth={0.7} rx={1} style={{ pointerEvents: "none" }} />
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
             );
           })}
 
@@ -569,17 +576,10 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
             const px = p.x*SC, py = p.y*SC, pw = p.w*SC, ph = p.h*SC;
             if (pw < 14 || ph < 9) return null;
             return (
-<<<<<<< HEAD
-              <text key={`n-${i}`} x={px+pw/2} y={py+ph/2}
-                textAnchor="middle" dominantBaseline="middle"
-                fontSize={Math.min(pw, ph) * 0.27} fill="white"
-                fontWeight={800} opacity={0.92}>
-=======
               <text key={`n-${p.id}`} x={px+pw/2} y={py+ph/2}
                 textAnchor="middle" dominantBaseline="middle"
                 fontSize={Math.min(pw, ph) * 0.27} fill="white"
                 fontWeight={800} opacity={0.92} style={{ pointerEvents: "none" }}>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
                 {i + 1}
               </text>
             );
@@ -587,20 +587,12 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
 
           <rect x={tw-8} y={0} width={8} height={th} fill="#1B2A3B" rx={1} />
           <rect x={tw-8} y={th*0.18} width={3} height={th*0.64} fill="#2C3F55" rx={1} />
-<<<<<<< HEAD
-          <text x={tw/2} y={th+15} textAnchor="middle" fontSize={9} fill="#2C3F55">
-=======
           <text x={tw/2} y={th+17} textAnchor="middle" fontSize={11} fill={theme.textMuted}>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
             {TL} cm ← Tır Uzunluğu →
           </text>
         </g>
         <text x={15} y={th/2+PT} textAnchor="middle" dominantBaseline="middle"
-<<<<<<< HEAD
-          fontSize={9} fill="#2C3F55" transform={`rotate(-90,15,${th/2+PT})`}>
-=======
           fontSize={12} fill={theme.textMuted} transform={`rotate(-90,15,${th/2+PT})`}>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
           {TW} cm
         </text>
       </svg>
@@ -609,11 +601,7 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
 }
 
 // ── SEARCHABLE SKU COMBOBOX ────────────────────────────────────────────────
-<<<<<<< HEAD
-function SkuCombobox({ skus, skuI, setSkuI, color }) {
-=======
 function SkuCombobox({ skus, skuI, setSkuI, color, theme }) {
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
   const [open, setOpen] = useState(false);
   const [q, setQ]       = useState("");
   const [hov, setHov]   = useState(0);
@@ -680,61 +668,36 @@ function SkuCombobox({ skus, skuI, setSkuI, color, theme }) {
         }}
         style={{
           width: "100%", boxSizing: "border-box",
-<<<<<<< HEAD
-          background: "#08121E", color: "#7FA8C8",
-          border: `1px solid ${open ? color : "#192C45"}`, borderRadius: 8,
-          padding: "7px 32px 7px 12px", fontSize: 12.5,
-=======
           background: theme.panelBgStrong, color: theme.textSecondary,
           border: `1px solid ${open ? color : theme.border}`, borderRadius: 8,
           padding: "9px 34px 9px 12px", fontSize: 14,
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
           outline: "none", cursor: "text", transition: "border 0.15s",
         }}
       />
       <span style={{
         position: "absolute", right: 10, top: "50%",
-<<<<<<< HEAD
-        transform: "translateY(-50%)", color: "#364C65",
-        fontSize: 11, pointerEvents: "none",
-=======
         transform: "translateY(-50%)", color: theme.textMuted,
         fontSize: 12.5, pointerEvents: "none",
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
       }}>
         {open ? "🔍" : "▾"}
       </span>
       {open && (
         <div style={{
           position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
-<<<<<<< HEAD
-          background: "#0C1827", border: "1px solid #192C45",
-=======
           background: theme.panelBg, border: `1px solid ${theme.border}`,
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
           borderRadius: 8, zIndex: 100,
           boxShadow: "0 10px 26px rgba(0,0,0,0.6)",
         }}>
           <div style={{
-<<<<<<< HEAD
-            padding: "5px 11px", fontSize: 9, color: "#283A50",
-            fontWeight: 800, letterSpacing: 1.5,
-            borderBottom: "1px solid #192C45", textTransform: "uppercase",
-=======
             padding: "7px 11px", fontSize: 11, color: theme.textMuted,
             fontWeight: 800, letterSpacing: 1.5,
             borderBottom: `1px solid ${theme.border}`, textTransform: "uppercase",
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
           }}>
             {filtered.length} / {skus.length} SKU eşleşti
           </div>
           <div ref={listRef} style={{ maxHeight: 240, overflowY: "auto" }}>
             {filtered.length === 0 ? (
-<<<<<<< HEAD
-              <div style={{ padding: 14, color: "#445570", fontSize: 11, textAlign: "center" }}>
-=======
               <div style={{ padding: 14, color: theme.textSecondary, fontSize: 12, textAlign: "center" }}>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
                 Eşleşen SKU bulunamadı
               </div>
             ) : (
@@ -746,17 +709,6 @@ function SkuCombobox({ skus, skuI, setSkuI, color, theme }) {
                     onClick={() => onSelect(s._i)}
                     onMouseEnter={() => setHov(idx)}
                     style={{
-<<<<<<< HEAD
-                      padding: "7px 11px", cursor: "pointer", fontSize: 11.5,
-                      background: isSel ? alpha(color, 0.13) : (isHov ? "#101C2E" : "transparent"),
-                      borderLeft: `2px solid ${isSel ? color : "transparent"}`,
-                      transition: "background 0.1s",
-                    }}>
-                    <div style={{ fontWeight: 700, color: isSel ? color : "#A0BAD0" }}>
-                      {s.sku}
-                    </div>
-                    <div style={{ fontSize: 10, color: "#445570", marginTop: 1 }}>
-=======
                       padding: "9px 11px", cursor: "pointer", fontSize: 13.5,
                       background: isSel ? alpha(color, 0.13) : (isHov ? THEME.cardBg : "transparent"),
                       borderLeft: `2px solid ${isSel ? color : "transparent"}`,
@@ -766,7 +718,6 @@ function SkuCombobox({ skus, skuI, setSkuI, color, theme }) {
                       {s.sku}
                     </div>
                     <div style={{ fontSize: 11.5, color: theme.textSecondary, marginTop: 1 }}>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
                       {s.name} · {s.en}×{s.boy}×{s.yuk}cm · {s.kg}kg
                       {s.qty ? ` · ${s.qty} pkt` : ""}
                     </div>
@@ -782,61 +733,35 @@ function SkuCombobox({ skus, skuI, setSkuI, color, theme }) {
 }
 
 // ── UI HELPERS ─────────────────────────────────────────────────────────────
-<<<<<<< HEAD
-function Gauge({ lbl, val, max, unit }) {
-=======
 function Gauge({ lbl, val, max, unit, theme }) {
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
   const pct = Math.min(100, (val / max) * 100);
   const c = pct < 70 ? "#22D3EE" : pct < 90 ? "#FBBF24" : "#EF4444";
   return (
     <div style={{ marginBottom: 11 }}>
-<<<<<<< HEAD
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
-        <span style={{ color: "#445570" }}>{lbl}</span>
-=======
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 5 }}>
         <span style={{ color: theme.textSecondary }}>{lbl}</span>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
         <span style={{ color: c, fontWeight: 700 }}>
           {val % 1 ? val.toFixed(1) : val} / {max} {unit}
         </span>
       </div>
-<<<<<<< HEAD
-      <div style={{ background: "#060F1C", borderRadius: 5, height: 8, overflow: "hidden" }}>
-=======
       <div style={{ background: theme.panelBg, borderRadius: 5, height: 8, overflow: "hidden" }}>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
         <div style={{ width: `${pct}%`, height: "100%", borderRadius: 5,
           transition: "width 0.32s ease",
           background: `linear-gradient(90deg,${shade(c,0.55)},${c})` }} />
       </div>
-<<<<<<< HEAD
-      <div style={{ fontSize: 9, color: "#283A50", textAlign: "right", marginTop: 2 }}>
-=======
       <div style={{ fontSize: 11, color: theme.textMuted, textAlign: "right", marginTop: 2 }}>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
         {pct.toFixed(1)}%
       </div>
     </div>
   );
 }
 
-<<<<<<< HEAD
-function StatRow({ k, v, vc }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "3.5px 0",
-      borderBottom: "1px solid #0A1525", fontSize: 11 }}>
-      <span style={{ color: "#364C65" }}>{k}</span>
-      <span style={{ color: vc || "#7FA8C8", fontWeight: 700 }}>{v}</span>
-=======
 function StatRow({ k, v, vc, theme }) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "3.5px 0",
       borderBottom: `1px solid ${theme.borderSoft}`, fontSize: 12.5 }}>
       <span style={{ color: theme.textMuted }}>{k}</span>
       <span style={{ color: vc || theme.textSecondary, fontWeight: 700 }}>{v}</span>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
     </div>
   );
 }
@@ -844,11 +769,7 @@ function StatRow({ k, v, vc, theme }) {
 function Badge({ ok, lbl }) {
   return (
     <span style={{
-<<<<<<< HEAD
-      fontSize: 9.5, padding: "2px 8px", borderRadius: 20, fontWeight: 800,
-=======
       fontSize: 11, padding: "3px 9px", borderRadius: 20, fontWeight: 800,
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
       border: `1px solid ${ok ? "#34D399" : "#F87171"}35`,
       background: ok ? "rgba(52,211,153,0.07)" : "rgba(248,113,113,0.07)",
       color: ok ? "#34D399" : "#F87171",
@@ -858,11 +779,6 @@ function Badge({ ok, lbl }) {
   );
 }
 
-<<<<<<< HEAD
-// ── MAIN APP ───────────────────────────────────────────────────────────────
-export default function App() {
-  const [skus,   setSkus]   = useState(DEMO_SKUS);
-=======
 function LayerEditor({ cols, rows, layers, activeLayer, setActiveLayer, setDisabledBoxes, theme }) {
   if (!cols || !rows || !layers) return null;
   const makeKey = (ly, ry, cx) => `${ly}-${ry}-${cx}`;
@@ -948,16 +864,10 @@ export default function App() {
   const [customPallets, setCustomPallets] = useState(() =>
     safeRead(LS_PALLETS_KEY, []).map((p, i) => ({ ...p, _id: `custom-p-${i}`, persist: true }))
   );
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
   const [isDemo, setIsDemo] = useState(true);
   const [skuI,   setSkuI]   = useState(0);
   const [palI,   setPalI]   = useState(0);
   const [oh,     setOh]     = useState(0);
-<<<<<<< HEAD
-  const [msg,    setMsg]    = useState("");
-  const fRef = useRef();
-
-=======
   const [maxH, setMaxH] = useState(DEFAULT_MAX_H);
   const [maxKg, setMaxKg] = useState(DEFAULT_MAX_KG);
   const [placements, setPlacements] = useState([]);
@@ -978,8 +888,6 @@ export default function App() {
     [customPallets]
   );
   const skus = useMemo(() => [...baseSkus, ...customSkus], [baseSkus, customSkus]);
-
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
   function handleFile(e) {
     const f = e.target.files[0];
     if (!f) return;
@@ -987,15 +895,12 @@ export default function App() {
     const r = new FileReader();
     r.onload = ev => {
       try {
-        const parsed = parseCSV(ev.target.result);
+        let parsed = parseCSV(ev.target.result);
+        if (!parsed.length) parsed = parseCSVLoose(ev.target.result);
         if (!parsed.length) { setMsg("⚠ CSV boş ya da format tanınamadı."); return; }
-<<<<<<< HEAD
-        setSkus(parsed); setSkuI(0); setIsDemo(false);
-=======
         setBaseSkus(parsed.map((s, i) => ({ ...s, _id: `csv-${i}-${s.sku}` })));
         setSkuI(0);
         setIsDemo(false);
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
         setMsg(`✓ ${parsed.length} SKU yüklendi.`);
       } catch { setMsg("✗ Dosya okunamadı."); }
     };
@@ -1004,30 +909,6 @@ export default function App() {
   }
 
   // Derived
-<<<<<<< HEAD
-  const sku = skus[skuI] || skus[0];
-  const pal = PALLET_TYPES[palI];
-  const col = PALETTE[skuI % PALETTE.length];
-  const { bH, bW, bL } = flatOrient(sku.en, sku.boy, sku.yuk);
-  const pack = packPallet(bL, bW, bH, pal.a, pal.b, oh);
-  const { cols, rows, layers } = pack;
-  const fpA  = cols * pack.boxL;   // pkg footprint along pallet pA axis
-  const fpB  = rows * pack.boxW;   // pkg footprint along pallet pB axis
-  const ipp  = cols * rows * layers;
-  const pKg  = ipp * sku.kg;
-  const stkH = PH + layers * bH;
-  const pls  = packTruck(pal.a, pal.b);
-  const nPal = pls.length;
-  const nItm = nPal * ipp;
-  const nTon = nPal * pKg / 1000;
-
-  const card = { background:"#101C2E", borderRadius:12, padding:"13px 17px", border:"1px solid #192C45" };
-  const SL   = { fontSize:9, color:"#283A50", fontWeight:900, letterSpacing:2,
-                 marginBottom:10, display:"block", textTransform:"uppercase" };
-  const SEL  = { width:"100%", background:"#08121E", color:"#7FA8C8",
-                 border:"1px solid #192C45", borderRadius:8, padding:"7px 10px",
-                 fontSize:12.5, outline:"none", cursor:"pointer" };
-=======
   useEffect(() => {
     localStorage.setItem(
       LS_PALLETS_KEY,
@@ -1095,33 +976,11 @@ export default function App() {
   const SEL  = { width:"100%", background:THEME.panelBgStrong, color:THEME.textSecondary,
                  border:`1px solid ${THEME.border}`, borderRadius:8, padding:"7px 10px",
                  fontSize:13.5, outline:"none", cursor:"pointer" };
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
 
   const msgCol = msg.startsWith("✓") ? "#34D399" : msg.startsWith("⚠") ? "#FCD34D" : "#F87171";
   const msgBg  = msg.startsWith("✓") ? "rgba(52,211,153,0.08)" :
                  msg.startsWith("⚠") ? "rgba(252,211,77,0.08)" : "rgba(248,113,113,0.08)";
 
-<<<<<<< HEAD
-  return (
-    <div style={{ background:"#080F1C", minHeight:"100vh", padding:"13px 16px",
-      fontFamily:"'Inter','Segoe UI',system-ui,sans-serif", color:"#B0C8E0" }}>
-
-      {/* HEADER */}
-      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14,
-        paddingBottom:12, borderBottom:"1px solid #101C2E" }}>
-        <span style={{ fontSize:26 }}>🚛</span>
-        <div style={{ flex:1 }}>
-          <h1 style={{ margin:0, fontSize:16, fontWeight:900, letterSpacing:-0.4, color:"#DDE8F4" }}>
-            Nordure Palet Yükleme Simülatörü
-            <span style={{ fontSize:9, color:"#283A50", fontWeight:700, marginLeft:8, verticalAlign:"middle" }}>v3.0</span>
-          </h1>
-          <p style={{ margin:"2px 0 0", fontSize:10, color:"#283A50" }}>
-            CSV + Aranabilir SKU + Detaylı Tır Haritası · Tır: {TL}×{TW}cm · Limit: {MAX_H}cm / {MAX_KG}kg
-          </p>
-        </div>
-        {msg && (
-          <div style={{ fontSize:10.5, padding:"4px 12px", borderRadius:8, flexShrink:0,
-=======
   const addCustomPallet = () => {
     const a = Number(newPal.a);
     const b = Number(newPal.b);
@@ -1227,7 +1086,6 @@ export default function App() {
         </div>
         {msg && (
           <div style={{ fontSize:12, padding:"6px 12px", borderRadius:8, flexShrink:0,
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
             background:msgBg, color:msgCol, border:`1px solid ${msgCol}28` }}>
             {msg}
           </div>
@@ -1235,15 +1093,6 @@ export default function App() {
       </div>
 
       {/* CONTROLS */}
-<<<<<<< HEAD
-      <div style={{ display:"flex", gap:9, marginBottom:12, flexWrap:"wrap", alignItems:"flex-end" }}>
-        <div style={{ flexShrink:0 }}>
-          <span style={SL}>CSV Yükle</span>
-          <button onClick={() => fRef.current && fRef.current.click()}
-            style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 15px",
-              background:"linear-gradient(135deg,#1A4FA0,#2563EB)", border:"none",
-              borderRadius:8, color:"white", fontSize:12, cursor:"pointer",
-=======
       <div style={{ display:"flex", gap:10, marginBottom:12, flexWrap:"wrap", alignItems:"flex-end" }}>
         <div style={{ flexShrink:0 }}>
           <span style={SL}>CSV Yükle</span>
@@ -1251,29 +1100,19 @@ export default function App() {
             style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 15px",
               background:"linear-gradient(135deg,#1A4FA0,#2563EB)", border:"none",
               borderRadius:8, color:"white", fontSize:13, cursor:"pointer",
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
               fontWeight:700, whiteSpace:"nowrap", boxShadow:"0 2px 8px rgba(37,99,235,0.3)" }}>
             📂 Dosya Seç
           </button>
           <input ref={fRef} type="file" accept=".csv" style={{ display:"none" }} onChange={handleFile} />
-<<<<<<< HEAD
-          <div style={{ fontSize:9, color:"#1E3050", marginTop:3, maxWidth:130 }}>
-=======
           <div style={{ fontSize:11.5, color:THEME.textSubtle, marginTop:5, maxWidth:180 }}>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
             Parent, SKU, PAKET SAYISI,<br/>En, Boy, Yukseklik, KG Agirlik
           </div>
         </div>
 
         <div style={{ flex:"1 1 240px", minWidth:200 }}>
           <span style={SL}>Ürün Seçimi (SKU) · Aranabilir</span>
-<<<<<<< HEAD
-          <SkuCombobox skus={skus} skuI={skuI} setSkuI={setSkuI} color={col} />
-          {isDemo && <div style={{ fontSize:9, color:"#1E3050", marginTop:3 }}>
-=======
           <SkuCombobox skus={skus} skuI={skuI} setSkuI={setSkuI} color={col} theme={THEME} />
           {isDemo && <div style={{ fontSize:11.5, color:THEME.textSubtle, marginTop:4 }}>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
             ⚠ Örnek veri · CSV yükleyin
           </div>}
         </div>
@@ -1281,11 +1120,7 @@ export default function App() {
         <div style={{ flex:"0 1 175px", minWidth:140 }}>
           <span style={SL}>Palet Tipi</span>
           <select style={SEL} value={palI} onChange={e => setPalI(+e.target.value)}>
-<<<<<<< HEAD
-            {PALLET_TYPES.map((p, i) => <option key={i} value={i}>{p.label}</option>)}
-=======
             {allPallets.map((p, i) => <option key={p._id || i} value={i}>{p.label}{p.source === "custom" ? " (özel)" : ""}</option>)}
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
           </select>
         </div>
 
@@ -1297,15 +1132,9 @@ export default function App() {
               return (
                 <button key={v} onClick={() => setOh(v)} style={{
                   padding:"6px 12px", borderRadius:8, cursor:"pointer", fontSize:11.5,
-<<<<<<< HEAD
-                  border:`1.5px solid ${on ? col : "#192C45"}`,
-                  background: on ? alpha(col, 0.11) : "#08121E",
-                  color: on ? col : "#364C65",
-=======
                   border:`1.5px solid ${on ? col : THEME.border}`,
                   background: on ? alpha(col, 0.11) : THEME.panelBgStrong,
                   color: on ? col : THEME.textMuted,
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
                   fontWeight: on ? 800 : 500, transition:"all 0.18s" }}>
                   {v === 0 ? "Yok" : `${v}cm`}
                 </button>
@@ -1313,25 +1142,6 @@ export default function App() {
             })}
           </div>
         </div>
-<<<<<<< HEAD
-      </div>
-
-      {/* FLAT ORIENT INFO */}
-      <div style={{ ...card, marginBottom:10, padding:"7px 14px", display:"flex",
-        gap:14, flexWrap:"wrap", alignItems:"center", borderLeft:`3px solid ${col}` }}>
-        <span style={{ fontSize:9, color:"#283A50", fontWeight:900, letterSpacing:1.8, textTransform:"uppercase" }}>
-          Düzleme Kuralı
-        </span>
-        <span style={{ fontSize:11, color:"#364C65" }}>
-          Girdi [{sku.en}, {sku.boy}, {sku.yuk}] cm → Sırala →
-        </span>
-        <span style={{ fontSize:11 }}>
-          <span style={{ color:"#4A6080" }}>H = </span>
-          <b style={{ color:"#7FA8C8" }}>{bH} cm</b>
-        </span>
-        <span style={{ fontSize:11 }}>
-          <span style={{ color:"#4A6080" }}>Taban = </span>
-=======
         <div style={{ flex:"1 1 270px", minWidth:200 }}>
           <span style={SL}>Yükleme Limitleri</span>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
@@ -1451,7 +1261,6 @@ export default function App() {
         </span>
         <span style={{ fontSize:11 }}>
           <span style={{ color:THEME.textSubtle }}>Taban = </span>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
           <b style={{ color:col }}>{bL} × {bW} cm</b>
         </span>
         {oh > 0 && (
@@ -1462,28 +1271,6 @@ export default function App() {
       </div>
 
       {/* MAIN GRID */}
-<<<<<<< HEAD
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 255px", gap:10, marginBottom:10 }}>
-        <div style={card}>
-          <span style={SL}>📦 İzometrik Palet Görünümü · Painter Sıralı · Merkezlenmiş</span>
-          <div style={{ background:"#060F1C", borderRadius:9, padding:"10px",
-            display:"flex", justifyContent:"center", marginBottom:9 }}>
-            <PalletView sku={sku} pa={pal.a} pb={pal.b} oh={oh} col={col} pack={pack} />
-          </div>
-          <div style={{ display:"flex", gap:10, flexWrap:"wrap", fontSize:10.5, color:"#283A50", alignItems:"center" }}>
-            <span>Palet: <b style={{ color:"#4A6080" }}>{pal.a}×{pal.b}×{PH}cm</b></span>
-            <span style={{ color:"#0D1A2A" }}>·</span>
-            <span>Kutu: <b style={{ color:"#4A6080" }}>{bL}×{bW}×{bH}cm</b></span>
-            <span style={{ color:"#0D1A2A" }}>·</span>
-            <span>Dizilim: <b style={{ color:col }}>{cols}×{rows}×{layers} kat</b></span>
-            <span style={{ color:"#0D1A2A" }}>·</span>
-            <span>Paket Tabanı: <b style={{ color:col }}>{fpA}×{fpB}cm</b></span>
-            {oh > 0 && <>
-              <span style={{ color:"#0D1A2A" }}>·</span>
-              <span style={{ color:"#F59E0B" }}>⚠ ±{oh}cm Sarkım</span>
-            </>}
-          </div>
-=======
       <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:10, marginBottom:10 }}>
         <div style={card}>
           <span style={SL}>📦 İzometrik Palet Görünümü · Kutu Ekle/Çıkar Aktif</span>
@@ -1524,27 +1311,10 @@ export default function App() {
             setDisabledBoxes={setDisabledBoxes}
             theme={THEME}
           />
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
         </div>
 
         <div style={card}>
           <span style={SL}>📊 Yük Analizi</span>
-<<<<<<< HEAD
-          <Gauge lbl="Yükleme Yüksekliği" val={stkH} max={MAX_H}  unit="cm" />
-          <Gauge lbl="Palet Ağırlığı"     val={pKg}  max={MAX_KG} unit="kg" />
-          <div style={{ borderTop:"1px solid #0A1525", margin:"9px 0 7px" }} />
-          <StatRow k="Ürün (SKU)"        v={sku.sku} vc={col} />
-          <StatRow k="Palet Tipi"        v={pal.label} />
-          <StatRow k="Kat Başına Kutu"   v={`${cols}×${rows} = ${cols*rows}`} />
-          <StatRow k="Toplam Kat"        v={layers} />
-          <StatRow k="Palet Başına"      v={`${ipp} adet`} />
-          <StatRow k="Tırdaki Palet"     v={`${nPal} adet`} />
-          <StatRow k="Toplam Kutu"       v={nItm.toLocaleString()} />
-          <StatRow k="Toplam Yük"        v={`${nTon.toFixed(2)} ton`} />
-          <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginTop:10 }}>
-            <Badge ok={stkH <= MAX_H}        lbl="YÜKSEKLİK" />
-            <Badge ok={pKg  <= MAX_KG}       lbl="AĞIRLIK" />
-=======
           <Gauge lbl="Yükleme Yüksekliği" val={stkH} max={maxH}  unit="cm" theme={THEME} />
           <Gauge lbl="Palet Ağırlığı"     val={pKg}  max={maxKg} unit="kg" theme={THEME} />
           <div style={{ borderTop:`1px solid ${THEME.borderSoft}`, margin:"9px 0 7px" }} />
@@ -1559,7 +1329,6 @@ export default function App() {
           <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginTop:10 }}>
             <Badge ok={stkH <= maxH}          lbl="YÜKSEKLİK" />
             <Badge ok={pKg  <= maxKg}         lbl="AĞIRLIK" />
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
             <Badge ok={cols > 0 && rows > 0} lbl="SIĞIYOR" />
           </div>
         </div>
@@ -1569,28 +1338,6 @@ export default function App() {
       <div style={card}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
           marginBottom:10, flexWrap:"wrap", gap:6 }}>
-<<<<<<< HEAD
-          <span style={{ ...SL, marginBottom:0 }}>🗺️ Tır Yükleme Haritası · Palet + Paket Detayı</span>
-          <span style={{ fontSize:10.5, color:"#283A50" }}>
-            <b style={{ color:"#7FA8C8" }}>{nPal}</b> palet · Guillotine Karma · {TL}×{TW}cm
-          </span>
-        </div>
-        <div style={{ background:"#060F1C", borderRadius:9, padding:"9px 7px" }}>
-          <TruckMap placements={pls} col={col} fpA={fpA} fpB={fpB} />
-        </div>
-        <div style={{ display:"flex", gap:16, marginTop:9, fontSize:10.5, flexWrap:"wrap" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-            <div style={{ width:12, height:12, borderRadius:2, background:"#7B5B1C", border:"0.5px solid #3D2D0E" }} />
-            <span style={{ color:"#445570" }}>Palet ({pal.a}×{pal.b}cm) · {nPal} adet</span>
-          </div>
-          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-            <div style={{ width:12, height:12, borderRadius:2, background:alpha(col, 0.74) }} />
-            <span style={{ color:"#445570" }}>Paket Tabanı ({fpA}×{fpB}cm)</span>
-          </div>
-          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-            <div style={{ width:12, height:12, borderRadius:2, background:"rgba(239,68,68,0.4)" }} />
-            <span style={{ color:"#445570" }}>Boş Alan</span>
-=======
           <span style={{ ...SL, marginBottom:0, fontSize:13 }}>🗺️ Tır Yükleme Haritası · Çoklu Seçim + Sürükle-Bırak</span>
           <span style={{ fontSize:13, color:THEME.textMuted }}>
             <b style={{ color:THEME.textPrimary }}>{nPal}</b> palet · Seçili: <b style={{ color:"#FCD34D" }}>{selectedPlacementIds.length}</b> · Ctrl/Shift ile çoklu seçim
@@ -1627,20 +1374,13 @@ export default function App() {
           <div style={{ display:"flex", alignItems:"center", gap:5 }}>
             <div style={{ width:12, height:12, borderRadius:2, background:"rgba(239,68,68,0.4)" }} />
             <span style={{ color:THEME.textSecondary }}>Boş Alan</span>
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
           </div>
         </div>
       </div>
 
-<<<<<<< HEAD
-      <p style={{ fontSize:9, color:"#111E30", textAlign:"center", marginTop:10, marginBottom:0 }}>
-        {isDemo ? "⚠ Örnek veri · CSV yükleyerek gerçek verilerinizi görselleştirin"
-                : "✓ Gerçek CSV verisi yüklü"} · Painter Algorithm · Düzleme Kuralı v2 · Guillotine Packing
-=======
       <p style={{ fontSize:12, color:THEME.textMuted, textAlign:"center", marginTop:10, marginBottom:0 }}>
         {isDemo ? "⚠ Örnek veri · CSV yükleyerek gerçek verilerinizi görselleştirin"
                 : "✓ Gerçek CSV verisi yüklü"} · Painter Algorithm · İnteraktif Yerleşim · Guillotine Packing
->>>>>>> c3df9a6 (Improve UI readability and interactive truck/pallet controls)
       </p>
     </div>
   );
