@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 
 // ── CONSTANTS ──────────────────────────────────────────────────────────────
 const C30 = Math.cos(Math.PI / 6);
-const TL = 1360, TW = 245;
+const TL = 1360, TW = 245; // default truck length/width (cm)
 const PALLET_BASE_H = 15;
 const DEFAULT_MAX_H = 205;
 const DEFAULT_MAX_KG = 1000;
@@ -20,11 +20,11 @@ const PALETTE = ["#3B82F6","#10B981","#F59E0B","#A78BFA","#F87171",
                  "#06B6D4","#EC4899","#84CC16","#FB923C","#A78BFA"];
 
 const DEMO_SKUS = [
-  { sku:"NRD-4412", name:"Seramik Döşeme 60×40",    en:60, boy:40, yuk:10, kg:18.5, qty:100 },
-  { sku:"NRD-2280", name:"Duvar Karosu 30×60",      en:30, boy:60, yuk:8,  kg:9.2,  qty:200 },
-  { sku:"NRD-8801", name:"Porselen Levha 60×60",    en:60, boy:60, yuk:12, kg:28.0, qty:50  },
-  { sku:"NRD-3315", name:"Mozaik Karo 30×30",       en:30, boy:30, yuk:15, kg:6.4,  qty:400 },
-  { sku:"NRD-6670", name:"Dış Mekan Taş Karo 60×40",en:60, boy:40, yuk:14, kg:22.0, qty:75  },
+  { sku:"NRD-4412", name:"Seramik Döşeme 60×40",    en:60, boy:40, yuk:10, kg:18.5, qty:100, fiyat:0 },
+  { sku:"NRD-2280", name:"Duvar Karosu 30×60",      en:30, boy:60, yuk:8,  kg:9.2,  qty:200, fiyat:0 },
+  { sku:"NRD-8801", name:"Porselen Levha 60×60",    en:60, boy:60, yuk:12, kg:28.0, qty:50,  fiyat:0 },
+  { sku:"NRD-3315", name:"Mozaik Karo 30×30",       en:30, boy:30, yuk:15, kg:6.4,  qty:400, fiyat:0 },
+  { sku:"NRD-6670", name:"Dış Mekan Taş Karo 60×40",en:60, boy:40, yuk:14, kg:22.0, qty:75,  fiyat:0 },
 ];
 
 // ── COLOR HELPERS ──────────────────────────────────────────────────────────
@@ -76,24 +76,27 @@ function overlap(a, b) {
   );
 }
 
-function validPlacement(candidate, placements, ignoreId = null) {
+function validPlacement(candidate, placements, ignoreId = null, truckL = TL, truckW = TW) {
   if (candidate.x < 0 || candidate.y < 0) return false;
-  if (candidate.x + candidate.w > TL || candidate.y + candidate.h > TW) return false;
+  if (candidate.x + candidate.w > truckL || candidate.y + candidate.h > truckW) return false;
   return !placements.some((p) => p.id !== ignoreId && overlap(candidate, p));
 }
 
-function findFreeSpot(placements, w, h) {
-  for (let x = 0; x <= TL - w; x += GRID_STEP_CM) {
-    for (let y = 0; y <= TW - h; y += GRID_STEP_CM) {
+function findFreeSpot(placements, w, h, truckL = TL, truckW = TW) {
+  for (let x = 0; x <= truckL - w; x += GRID_STEP_CM) {
+    for (let y = 0; y <= truckW - h; y += GRID_STEP_CM) {
       const candidate = { x, y, w, h };
-      if (validPlacement(candidate, placements)) return { x, y };
+      if (validPlacement(candidate, placements, null, truckL, truckW)) return { x, y };
     }
   }
   return null;
 }
 // ── FLAT ORIENTATION RULE ──────────────────────────────────────────────────
-function flatOrient(en, boy, yuk) {
+// orient "A": largest face down (default) | "B": middle face | "C": smallest face
+function flatOrient(en, boy, yuk, orient = "A") {
   const [s, m, l] = [+en, +boy, +yuk].sort((a, b) => a - b);
+  if (orient === "B") return { bH: m, bW: s, bL: l };
+  if (orient === "C") return { bH: l, bW: s, bL: m };
   return { bH: s, bW: m, bL: l };
 }
 
@@ -164,6 +167,7 @@ function parseCSV(text) {
   const iB = fi("boy", "uzunluk", "length");
   const iY = fi("yukseklik", "yuk", "height");
   const iK = fi("kg", "agirlik", "weight");
+  const iF = fi("fiyat", "alis fiyati", "gercek alis fiyati", "price", "unit price");
   return lines.slice(1)
     .filter(l => l.trim())
     .map((line, idx) => {
@@ -182,13 +186,14 @@ function parseCSV(text) {
         return parseFloat(s.replace(",", "."));
       };
       return {
-        sku:  get(iS) || `SKU-${idx + 1}`,
-        name: get(iP) || get(iS) || `Ürün ${idx + 1}`,
-        qty:  parseInt(get(iQ))   || 0,
-        en:   num(get(iE)) || 0,
-        boy:  num(get(iB)) || 0,
-        yuk:  num(get(iY)) || 0,
-        kg:   num(get(iK)) || 0,
+        sku:   get(iS) || `SKU-${idx + 1}`,
+        name:  get(iP) || get(iS) || `Ürün ${idx + 1}`,
+        qty:   parseInt(get(iQ))   || 0,
+        en:    num(get(iE)) || 0,
+        boy:   num(get(iB)) || 0,
+        yuk:   num(get(iY)) || 0,
+        kg:    num(get(iK)) || 0,
+        fiyat: num(get(iF)) || 0,
       };
     })
     .filter(s => s.en > 0 && s.boy > 0 && s.yuk > 0);
@@ -207,50 +212,80 @@ function parseCSVLoose(text) {
   return lines.slice(1).map((line, idx) => {
     const v = line.split(delim).map((x) => x.trim());
     return {
-      sku: v[1] || `SKU-${idx + 1}`,
-      name: v[0] || v[1] || `Ürün ${idx + 1}`,
-      qty: parseInt(v[2]) || 0,
-      en: num(v[3]),
-      boy: num(v[4]),
-      yuk: num(v[5]),
-      kg: num(v[6]),
+      sku:   v[1] || `SKU-${idx + 1}`,
+      name:  v[0] || v[1] || `Ürün ${idx + 1}`,
+      qty:   parseInt(v[2]) || 0,
+      en:    num(v[3]),
+      boy:   num(v[4]),
+      yuk:   num(v[5]),
+      kg:    num(v[6]),
+      fiyat: num(v[7]) || 0,
     };
   }).filter((s) => s.en > 0 && s.boy > 0 && s.yuk > 0);
 }
 
+// ── SARKIM MODEL ────────────────────────────────────────────────────────────
+// mode 0  -> no extension
+// mode 5  -> optional overhang up to +10 per axis (not mandatory on both axes)
+// mode 15 -> board is mandatory (+20 per axis), plus optional overhang to +30 per axis
+function getSarkimPolicy(mode) {
+  if (mode === 15) return { baseAxisExtra: 20, maxAxisExtra: 30 };
+  if (mode === 5) return { baseAxisExtra: 0, maxAxisExtra: 10 };
+  return { baseAxisExtra: 0, maxAxisExtra: 0 };
+}
+
 // ── PALLET PACKING ─────────────────────────────────────────────────────────
 function packPallet(bL, bW, bH, pA, pB, oh, maxH, maxKg, itemKg, palletBaseH = PALLET_BASE_H) {
-  const eA = pA + 2 * oh, eB = pB + 2 * oh;
-  const [c1, r1] = [Math.floor(eA / bL), Math.floor(eB / bW)];
-  const [c2, r2] = [Math.floor(eA / bW), Math.floor(eB / bL)];
+  const { baseAxisExtra, maxAxisExtra } = getSarkimPolicy(oh);
+  const maxA = pA + maxAxisExtra;
+  const maxB = pB + maxAxisExtra;
+  const minA = pA + baseAxisExtra;
+  const minB = pB + baseAxisExtra;
+  const [c1, r1] = [Math.floor(maxA / bL), Math.floor(maxB / bW)];
+  const [c2, r2] = [Math.floor(maxA / bW), Math.floor(maxB / bL)];
   const maxByHeight = Math.max(0, Math.floor((maxH - palletBaseH) / bH));
 
   const evalPack = (cols, rows, boxL, boxW) => {
     const perLayer = Math.max(0, cols * rows);
+    const usedA = cols * boxL;
+    const usedB = rows * boxW;
+    if (usedA > maxA || usedB > maxB) {
+      return { cols, rows, layers: 0, boxL, boxW, effA: minA, effB: minB, score: 0 };
+    }
+    const effA = Math.max(minA, usedA);
+    const effB = Math.max(minB, usedB);
     if (perLayer === 0 || maxByHeight === 0) {
-      return { cols, rows, layers: 0, boxL, boxW, score: 0 };
+      return { cols, rows, layers: 0, boxL, boxW, effA, effB, score: 0 };
     }
     const maxByWeight = itemKg > 0
       ? Math.max(0, Math.floor(maxKg / (perLayer * itemKg)))
       : Number.MAX_SAFE_INTEGER;
     const layers = Math.min(maxByHeight, maxByWeight);
     const score = perLayer * layers;
-    return { cols, rows, layers, boxL, boxW, score };
+    return { cols, rows, layers, boxL, boxW, effA, effB, score };
   };
 
   const a = evalPack(Math.max(0, c1), Math.max(0, r1), bL, bW);
   const b = evalPack(Math.max(0, c2), Math.max(0, r2), bW, bL);
   const best = b.score > a.score ? b : a;
-  return { cols: best.cols, rows: best.rows, layers: best.layers, boxL: best.boxL, boxW: best.boxW };
+  return {
+    cols: best.cols,
+    rows: best.rows,
+    layers: best.layers,
+    boxL: best.boxL,
+    boxW: best.boxW,
+    effA: best.effA,
+    effB: best.effB,
+  };
 }
 
 // ── TRUCK PACKING ──────────────────────────────────────────────────────────
 // 'across' = pallet dim across truck width, 'along' = pallet dim along truck length
 // 'paAlongL' = true if pallet's pA axis runs along truck length
-function packTruck(pA, pB) {
+function packTruck(eA, eB, truckL = TL, truckW = TW) {
   const unif = (across, along, paAlongL) => {
-    const c = Math.floor(TW / across);
-    const r = Math.floor(TL / along);
+    const c = Math.floor(truckW / across);
+    const r = Math.floor(truckL / along);
     if (!c || !r) return { n: 0, pls: [] };
     const pls = [];
     for (let ri = 0; ri < r; ri++)
@@ -260,16 +295,16 @@ function packTruck(pA, pB) {
   };
 
   const guill = (a1, b1, paL1, a2, b2, paL2) => {
-    const c1 = Math.floor(TW / a1), c2 = Math.floor(TW / a2);
+    const c1 = Math.floor(truckW / a1), c2 = Math.floor(truckW / a2);
     if (!c1) return { n: 0, pls: [] };
     let bn = 0, br1 = 0;
-    for (let r = 0; r <= Math.floor(TL / b1); r++) {
-      const rem = TL - r * b1;
+    for (let r = 0; r <= Math.floor(truckL / b1); r++) {
+      const rem = truckL - r * b1;
       const r2 = c2 ? Math.floor(rem / b2) : 0;
       const t = c1 * r + (c2 ? c2 * r2 : 0);
       if (t > bn) { bn = t; br1 = r; }
     }
-    const r2 = c2 ? Math.floor((TL - br1 * b1) / b2) : 0;
+    const r2 = c2 ? Math.floor((truckL - br1 * b1) / b2) : 0;
     const pls = [];
     for (let r = 0; r < br1; r++)
       for (let c = 0; c < c1; c++)
@@ -282,10 +317,10 @@ function packTruck(pA, pB) {
   };
 
   return [
-    unif(pA, pB, false),
-    unif(pB, pA, true),
-    guill(pA, pB, false, pB, pA, true),
-    guill(pB, pA, true,  pA, pB, false),
+    unif(eA, eB, false),
+    unif(eB, eA, true),
+    guill(eA, eB, false, eB, eA, true),
+    guill(eB, eA, true,  eA, eB, false),
   ].reduce((b, o) => o.n > b.n ? o : b, { n: -1, pls: [] }).pls;
 }
 
@@ -309,10 +344,10 @@ function IsoBox({ x, y, z, w, d, h, col, s, bf = 1, project = toIso }) {
 }
 
 // ── PALLET ISO VIEW ────────────────────────────────────────────────────────
-function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0 }) {
+function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0, orient = "A" }) {
   const [yawDeg, setYawDeg] = useState(0);
   const dragRef = useRef(null);
-  const { bH } = flatOrient(sku.en, sku.boy, sku.yuk);
+  const { bH } = flatOrient(sku.en, sku.boy, sku.yuk, orient);
   const { cols, rows, layers, boxL, boxW } = pack;
   const perLayer = cols * rows;
   const safeExtra = Math.max(0, extraBoxes);
@@ -432,10 +467,78 @@ function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0 }) {
   );
 }
 
+// ── ORIENT BOX PREVIEW ─────────────────────────────────────────────────────
+// Shows a static isometric box with A/B/C face labels.
+// Face areas: top=m×l (A), front=s×l (B), right=s×m (C)
+function OrientBox({ en, boy, yuk, activeOrient, col }) {
+  const [s, m, l] = [+en, +boy, +yuk].sort((a, b) => a - b);
+  const W = l, D = m, H = s;
+  const S = Math.min(2.8, Math.max(0.9, 220 / Math.max(1, (W + D) * C30)));
+
+  const corners = [
+    [0,0,0],[W,0,0],[0,D,0],[W,D,0],
+    [0,0,H],[W,0,H],[0,D,H],[W,D,H],
+  ].map(([x,y,z]) => toIso(x,y,z,S));
+  const pad = 14;
+  const vx0 = Math.min(...corners.map(c=>c[0])) - pad;
+  const vy0 = Math.min(...corners.map(c=>c[1])) - pad;
+  const vx1 = Math.max(...corners.map(c=>c[0])) + pad;
+  const vy1 = Math.max(...corners.map(c=>c[1])) + pad;
+  const vW = vx1 - vx0, vH = vy1 - vy0;
+
+  // face centers in iso coords
+  const faceCenterIso = (pts) => {
+    const xs = pts.map(([x,y,z]) => toIso(x,y,z,S)[0]);
+    const ys = pts.map(([x,y,z]) => toIso(x,y,z,S)[1]);
+    return [(Math.min(...xs)+Math.max(...xs))/2, (Math.min(...ys)+Math.max(...ys))/2];
+  };
+  // A = top face (z=H)
+  const [ax, ay] = faceCenterIso([[0,0,H],[W,0,H],[W,D,H],[0,D,H]]);
+  // B = front face (y=D)
+  const [bx, by] = faceCenterIso([[0,D,0],[W,D,0],[W,D,H],[0,D,H]]);
+  // C = right face (x=W)
+  const [cx, cy] = faceCenterIso([[W,0,0],[W,D,0],[W,D,H],[W,0,H]]);
+
+  const boxCol = col || "#3B82F6";
+  const labelStyle = (face) => ({
+    fontSize: Math.min(22, Math.max(12, S * 9)),
+    fontWeight: 900,
+    fill: activeOrient === face ? "#FFFFFF" : "rgba(255,255,255,0.55)",
+    paintOrder: "stroke",
+    stroke: "rgba(0,0,0,0.55)",
+    strokeWidth: 3,
+  });
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${vW.toFixed(1)} ${vH.toFixed(1)}`}
+      style={{ maxHeight: 190, display: "block" }}>
+      <g transform={`translate(${(-vx0).toFixed(2)},${(-vy0).toFixed(2)})`}>
+        <IsoBox x={0} y={0} z={0} w={W} d={D} h={H} col={boxCol} s={S} bf={1} />
+        <text x={ax} y={ay} textAnchor="middle" dominantBaseline="middle" {...labelStyle("A")}>A</text>
+        <text x={bx} y={by} textAnchor="middle" dominantBaseline="middle" {...labelStyle("B")}>B</text>
+        <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" {...labelStyle("C")}>C</text>
+      </g>
+    </svg>
+  );
+}
+
 // ── TRUCK MAP (DETAILED: pallet + package footprint, in 3 layered passes) ──
-function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col, fpA, fpB, theme }) {
-  const SC = 0.61;
-  const tw = TL * SC, th = TW * SC;
+function TruckMap({
+  placements,
+  setPlacements,
+  selectedIds,
+  setSelectedIds,
+  col,
+  fpA,
+  fpB,
+  theme,
+  readOnly = false,
+  truckL = TL,
+  truckW = TW,
+}) {
+  const SC = 0.9;
+  const SNAP_DIST_CM = 4;
+  const tw = truckL * SC, th = truckW * SC;
   const PL = 44, PT = 10;
   const svgRef = useRef();
   const [drag, setDrag] = useState(null);
@@ -446,6 +549,95 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
     const y = (clientY - rect.top - PT) / SC;
     return { x, y };
   };
+  const roundCm = (v) => Math.round(v * 2) / 2;
+  const clampRect = (x, y, w, h) => ({
+    x: Math.max(0, Math.min(truckL - w, x)),
+    y: Math.max(0, Math.min(truckW - h, y)),
+  });
+  const snapAxis = (value, candidates, threshold) => {
+    let best = value;
+    let bestDist = threshold + 1;
+    for (const c of candidates) {
+      const d = Math.abs(value - c);
+      if (d <= threshold && d < bestDist) {
+        bestDist = d;
+        best = c;
+      }
+    }
+    return best;
+  };
+  const applySoftSnap = (targetX, targetY, w, h, staticPlacements) => {
+    const xCandidates = [0, truckL - w];
+    const yCandidates = [0, truckW - h];
+    for (const sp of staticPlacements) {
+      // Side-by-side candidates (touching edges)
+      xCandidates.push(sp.x - w, sp.x + sp.w);
+      yCandidates.push(sp.y - h, sp.y + sp.h);
+      // Alignment candidates (same left/right or top/bottom lines)
+      xCandidates.push(sp.x, sp.x + sp.w - w);
+      yCandidates.push(sp.y, sp.y + sp.h - h);
+    }
+    let snappedX = snapAxis(targetX, xCandidates, SNAP_DIST_CM);
+    let snappedY = snapAxis(targetY, yCandidates, SNAP_DIST_CM);
+
+    // Coupled snapping: if we're close to top/bottom contact, also align on X.
+    // If we're close to left/right contact, also align on Y.
+    for (const sp of staticPlacements) {
+      const topTouchY = sp.y - h;
+      const bottomTouchY = sp.y + sp.h;
+      if (Math.abs(targetY - topTouchY) <= SNAP_DIST_CM || Math.abs(targetY - bottomTouchY) <= SNAP_DIST_CM) {
+        snappedY = Math.abs(targetY - topTouchY) < Math.abs(targetY - bottomTouchY) ? topTouchY : bottomTouchY;
+        snappedX = snapAxis(
+          snappedX,
+          [sp.x, sp.x + sp.w - w, sp.x + (sp.w - w) / 2],
+          SNAP_DIST_CM
+        );
+      }
+
+      const leftTouchX = sp.x - w;
+      const rightTouchX = sp.x + sp.w;
+      if (Math.abs(targetX - leftTouchX) <= SNAP_DIST_CM || Math.abs(targetX - rightTouchX) <= SNAP_DIST_CM) {
+        snappedX = Math.abs(targetX - leftTouchX) < Math.abs(targetX - rightTouchX) ? leftTouchX : rightTouchX;
+        snappedY = snapAxis(
+          snappedY,
+          [sp.y, sp.y + sp.h - h, sp.y + (sp.h - h) / 2],
+          SNAP_DIST_CM
+        );
+      }
+    }
+
+    const clamped = clampRect(roundCm(snappedX), roundCm(snappedY), w, h);
+    return { x: clamped.x, y: clamped.y };
+  };
+  const nearestFreeSpot = (staticPlacements, w, h, targetX, targetY) => {
+    const snap = (v, max) => Math.max(0, Math.min(max, roundCm(v)));
+    const isValid = (x, y) => {
+      const cand = { x, y, w, h };
+      if (cand.x < 0 || cand.y < 0 || cand.x + cand.w > truckL || cand.y + cand.h > truckW) return false;
+      return !staticPlacements.some((sp) => overlap(cand, sp));
+    };
+    const tx = snap(targetX, truckL - w);
+    const ty = snap(targetY, truckW - h);
+    if (isValid(tx, ty)) return { x: tx, y: ty };
+    const step = 2;
+    const maxR = Math.max(truckL, truckW);
+    for (let r = step; r <= maxR; r += step) {
+      for (let d = -r; d <= r; d += step) {
+        const candidates = [
+          { x: tx + d, y: ty - r },
+          { x: tx + d, y: ty + r },
+          { x: tx - r, y: ty + d },
+          { x: tx + r, y: ty + d },
+        ];
+        for (const c of candidates) {
+          const cx = snap(c.x, truckL - w);
+          const cy = snap(c.y, truckW - h);
+          if (isValid(cx, cy)) return { x: cx, y: cy };
+        }
+      }
+    }
+    return null;
+  };
 
   useEffect(() => {
     if (!drag) return undefined;
@@ -455,28 +647,55 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
       setPlacements((prev) => {
         const dx = x - drag.startX;
         const dy = y - drag.startY;
+        const movedIds = new Set(drag.ids);
+        const staticPlacements = prev.filter((p) => !movedIds.has(p.id));
         const nextById = new Map(
           drag.ids.map((id) => {
             const origin = drag.origins[id];
-            return [id, { x: origin.x + dx, y: origin.y + dy }];
+            const w = drag.sizes[id].w;
+            const h = drag.sizes[id].h;
+            const raw = clampRect(roundCm(origin.x + dx), roundCm(origin.y + dy), w, h);
+            const snapped = applySoftSnap(raw.x, raw.y, w, h, staticPlacements);
+            return [id, { x: snapped.x, y: snapped.y }];
           })
         );
-        const staticPlacements = prev.filter((p) => !nextById.has(p.id));
-        for (const p of prev) {
-          if (!nextById.has(p.id)) continue;
-          const n = nextById.get(p.id);
-          const candidate = { ...p, x: n.x, y: n.y };
-          if (candidate.x < 0 || candidate.y < 0) return prev;
-          if (candidate.x + candidate.w > TL || candidate.y + candidate.h > TW) return prev;
-          if (staticPlacements.some((sp) => overlap(candidate, sp))) return prev;
-        }
         return prev.map((p) => {
           const n = nextById.get(p.id);
           return n ? { ...p, x: n.x, y: n.y } : p;
         });
       });
     };
-    const onUp = () => setDrag(null);
+    const onUp = () => {
+      setPlacements((prev) => {
+        const movedIds = new Set(drag.ids);
+        const movedPlacements = prev.filter((p) => movedIds.has(p.id));
+        const staticPlacements = prev.filter((p) => !movedIds.has(p.id));
+        const validBounds = movedPlacements.every((p) => p.x >= 0 && p.y >= 0 && p.x + p.w <= truckL && p.y + p.h <= truckW);
+        let validStaticOverlap = true;
+        for (const p of movedPlacements) {
+          if (staticPlacements.some((sp) => overlap(p, sp))) { validStaticOverlap = false; break; }
+        }
+        let validInternalOverlap = true;
+        for (let i = 0; i < movedPlacements.length; i++) {
+          for (let j = i + 1; j < movedPlacements.length; j++) {
+            if (overlap(movedPlacements[i], movedPlacements[j])) { validInternalOverlap = false; break; }
+          }
+          if (!validInternalOverlap) break;
+        }
+        if (validBounds && validStaticOverlap && validInternalOverlap) return prev;
+        if (drag.ids.length === 1 && movedPlacements.length === 1) {
+          const p = movedPlacements[0];
+          const spot = nearestFreeSpot(staticPlacements, p.w, p.h, p.x, p.y);
+          if (spot) return prev.map((item) => item.id === p.id ? { ...item, x: spot.x, y: spot.y } : item);
+        }
+        return prev.map((p) => {
+          if (!movedIds.has(p.id)) return p;
+          const origin = drag.origins[p.id];
+          return origin ? { ...p, x: origin.x, y: origin.y } : p;
+        });
+      });
+      setDrag(null);
+    };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => {
@@ -489,12 +708,17 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
   const startDrag = (evt, ids, leadPlacement) => {
     const m = toCm(evt.clientX, evt.clientY);
     const origins = {};
+    const sizes = {};
     placements.forEach((pl) => {
-      if (ids.includes(pl.id)) origins[pl.id] = { x: pl.x, y: pl.y };
+      if (ids.includes(pl.id)) {
+        origins[pl.id] = { x: pl.x, y: pl.y };
+        sizes[pl.id] = { w: pl.w, h: pl.h };
+      }
     });
     setDrag({
       ids,
       origins,
+      sizes,
       startX: m.x,
       startY: m.y,
       leadX: leadPlacement.x,
@@ -503,6 +727,7 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
   };
 
   const handlePalletMouseDown = (evt, p) => {
+    if (readOnly) return;
     evt.stopPropagation();
     if (isMultiToggle(evt)) {
       setSelectedIds((prev) => prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id]);
@@ -514,12 +739,33 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
   };
 
   const gridX = [];
-  for (let x = 0; x <= TL; x += 20) gridX.push(x);
+  for (let x = 0; x <= truckL; x += 20) gridX.push(x);
   const gridY = [];
-  for (let y = 0; y <= TW; y += 10) gridY.push(y);
+  for (let y = 0; y <= truckW; y += 10) gridY.push(y);
+  const truckRect = { x: 0, y: 0, w: truckL, h: truckW };
+  const overflowParts = (inner, outer) => {
+    const parts = [];
+    const innerRight = inner.x + inner.w;
+    const innerBottom = inner.y + inner.h;
+    const outerRight = outer.x + outer.w;
+    const outerBottom = outer.y + outer.h;
+    const midX = Math.max(inner.x, outer.x);
+    const midRight = Math.min(innerRight, outerRight);
+    if (inner.x < outer.x) parts.push({ x: inner.x, y: inner.y, w: outer.x - inner.x, h: inner.h });
+    if (innerRight > outerRight) parts.push({ x: outerRight, y: inner.y, w: innerRight - outerRight, h: inner.h });
+    if (inner.y < outer.y && midRight > midX) parts.push({ x: midX, y: inner.y, w: midRight - midX, h: outer.y - inner.y });
+    if (innerBottom > outerBottom && midRight > midX) parts.push({ x: midX, y: outerBottom, w: midRight - midX, h: innerBottom - outerBottom });
+    return parts.filter((r) => r.w > 0 && r.h > 0);
+  };
+  const toSvgRect = (r) => ({
+    x: r.x * SC,
+    y: r.y * SC,
+    w: r.w * SC,
+    h: r.h * SC,
+  });
 
   return (
-    <div style={{ overflowX: "auto", border: `1px solid ${theme.borderSoft}`, borderRadius: 10, cursor: drag ? "grabbing" : "default" }}>
+    <div style={{ overflowX: "auto", border: `1px solid ${theme.borderSoft}`, borderRadius: 10, cursor: readOnly ? "default" : (drag ? "grabbing" : "default") }}>
       <svg
         ref={svgRef}
         width={tw + PL + 12}
@@ -577,7 +823,10 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
                 style={{ cursor: "grab" }}
               >
                 <rect x={px+0.4} y={py+0.4} width={pw-0.8} height={ph-0.8}
-                  fill="#7B5B1C" stroke={isSelected ? "#FCD34D" : "#3D2D0E"} strokeWidth={isSelected ? 2.1 : 0.5} rx={1.5} />
+                  fill="#7B5B1C"
+                  stroke={isSelected ? "#FCD34D" : "#3D2D0E"}
+                  strokeWidth={isSelected ? 2.1 : 0.5}
+                  rx={1.5} />
                 {[0.25, 0.5, 0.75].map((t, j) => longHoriz ? (
                   <line key={j} x1={px+pw*t} y1={py+1.5} x2={px+pw*t} y2={py+ph-1.5}
                     stroke="rgba(0,0,0,0.30)" strokeWidth={0.4} />
@@ -594,14 +843,35 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
             const fpL = p.paAlongL ? fpA : fpB;
             const fpW = p.paAlongL ? fpB : fpA;
             if (fpL <= 0 || fpW <= 0) return null;
-            const pkx = (p.x + (p.w - fpL) / 2) * SC;
-            const pky = (p.y + (p.h - fpW) / 2) * SC;
-            const pkw = fpL * SC;
-            const pkh = fpW * SC;
+            const pkg = {
+              x: p.x + (p.w - fpL) / 2,
+              y: p.y + (p.h - fpW) / 2,
+              w: fpL,
+              h: fpW,
+            };
+            const palletOverflow = overflowParts(pkg, p);
+            const truckOverflow = overflowParts(pkg, truckRect);
+            const hasOverflow = palletOverflow.length > 0 || truckOverflow.length > 0;
+            const pk = toSvgRect(pkg);
             return (
-              <rect key={`pkg-${p.id}`} x={pkx} y={pky} width={pkw} height={pkh}
-                fill={alpha(col, 0.74)} stroke={shade(col, 0.5)}
-                strokeWidth={0.7} rx={1} style={{ pointerEvents: "none" }} />
+              <g key={`pkg-${p.id}`} style={{ pointerEvents: "none" }}>
+                <rect x={pk.x} y={pk.y} width={pk.w} height={pk.h}
+                  fill={alpha(col, hasOverflow ? 0.48 : 0.74)}
+                  stroke={hasOverflow ? "#F59E0B" : shade(col, 0.5)}
+                  strokeWidth={hasOverflow ? 1.4 : 0.7}
+                  strokeDasharray={hasOverflow ? "4,3" : undefined}
+                  rx={1} />
+                {palletOverflow.map((r, idx) => {
+                  const sr = toSvgRect(r);
+                  return <rect key={`p-over-${idx}`} x={sr.x} y={sr.y} width={sr.w} height={sr.h}
+                    fill="rgba(245,158,11,0.55)" stroke="#F59E0B" strokeWidth={0.8} rx={1} />;
+                })}
+                {truckOverflow.map((r, idx) => {
+                  const sr = toSvgRect(r);
+                  return <rect key={`t-over-${idx}`} x={sr.x} y={sr.y} width={sr.w} height={sr.h}
+                    fill="rgba(239,68,68,0.58)" stroke="#F87171" strokeWidth={0.9} rx={1} />;
+                })}
+              </g>
             );
           })}
 
@@ -622,12 +892,12 @@ function TruckMap({ placements, setPlacements, selectedIds, setSelectedIds, col,
           <rect x={tw-8} y={0} width={8} height={th} fill="#1B2A3B" rx={1} />
           <rect x={tw-8} y={th*0.18} width={3} height={th*0.64} fill="#2C3F55" rx={1} />
           <text x={tw/2} y={th+17} textAnchor="middle" fontSize={11} fill={theme.textMuted}>
-            {TL} cm ← Tır Uzunluğu →
+            {truckL} cm ← Tır Uzunluğu →
           </text>
         </g>
         <text x={15} y={th/2+PT} textAnchor="middle" dominantBaseline="middle"
           fontSize={12} fill={theme.textMuted} transform={`rotate(-90,15,${th/2+PT})`}>
-          {TW} cm
+          {truckW} cm
         </text>
       </svg>
     </div>
@@ -773,19 +1043,19 @@ function Gauge({ lbl, val, max, unit, theme }) {
   const pct = Math.min(100, (safeVal / safeMax) * 100);
   const c = pct < 70 ? "#22D3EE" : pct < 90 ? "#FBBF24" : "#EF4444";
   return (
-    <div style={{ marginBottom: 11 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 5 }}>
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 7 }}>
         <span style={{ color: theme.textSecondary }}>{lbl}</span>
         <span style={{ color: c, fontWeight: 700 }}>
           {safeVal % 1 ? safeVal.toFixed(1) : safeVal} / {safeMax} {unit}
         </span>
       </div>
-      <div style={{ background: theme.panelBg, borderRadius: 5, height: 8, overflow: "hidden" }}>
-        <div style={{ width: `${pct}%`, height: "100%", borderRadius: 5,
+      <div style={{ background: theme.panelBg, borderRadius: 6, height: 11, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", borderRadius: 6,
           transition: "width 0.32s ease",
           background: `linear-gradient(90deg,${shade(c,0.55)},${c})` }} />
       </div>
-      <div style={{ fontSize: 11, color: theme.textMuted, textAlign: "right", marginTop: 2 }}>
+      <div style={{ fontSize: 12, color: theme.textMuted, textAlign: "right", marginTop: 3 }}>
         {pct.toFixed(1)}%
       </div>
     </div>
@@ -794,10 +1064,10 @@ function Gauge({ lbl, val, max, unit, theme }) {
 
 function StatRow({ k, v, vc, theme }) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "3.5px 0",
-      borderBottom: `1px solid ${theme.borderSoft}`, fontSize: 12.5 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "6px 0",
+      borderBottom: `1px solid ${theme.borderSoft}`, fontSize: 14 }}>
       <span style={{ color: theme.textMuted }}>{k}</span>
-      <span style={{ color: vc || theme.textSecondary, fontWeight: 700 }}>{v}</span>
+      <span style={{ color: vc || theme.textSecondary, fontWeight: 800, textAlign: "right" }}>{v}</span>
     </div>
   );
 }
@@ -805,7 +1075,7 @@ function StatRow({ k, v, vc, theme }) {
 function Badge({ ok, lbl }) {
   return (
     <span style={{
-      fontSize: 11, padding: "3px 9px", borderRadius: 20, fontWeight: 800,
+      fontSize: 12, padding: "4px 10px", borderRadius: 20, fontWeight: 800,
       border: `1px solid ${ok ? "#34D399" : "#F87171"}35`,
       background: ok ? "rgba(52,211,153,0.07)" : "rgba(248,113,113,0.07)",
       color: ok ? "#34D399" : "#F87171",
@@ -887,11 +1157,16 @@ export default function App() {
   const [isDemo, setIsDemo] = useState(true);
   const [skuI,   setSkuI]   = useState(0);
   const [palI,   setPalI]   = useState(0);
-  const [oh,     setOh]     = useState(0);
+  const [autoSarkım, setAutoSarkım] = useState(true);
+  const [manualOh,   setManualOh]   = useState(0);
   const [maxH, setMaxH] = useState(DEFAULT_MAX_H);
   const [maxKg, setMaxKg] = useState(DEFAULT_MAX_KG);
+  const [truckL, setTruckL] = useState(TL);
+  const [truckW, setTruckW] = useState(TW);
   const [maxHInput, setMaxHInput] = useState(String(DEFAULT_MAX_H));
   const [maxKgInput, setMaxKgInput] = useState(String(DEFAULT_MAX_KG));
+  const [truckLInput, setTruckLInput] = useState(String(TL));
+  const [truckWInput, setTruckWInput] = useState(String(TW));
   const [placements, setPlacements] = useState([]);
   const [selectedPlacementIds, setSelectedPlacementIds] = useState([]);
   const [layerAdjust, setLayerAdjust] = useState(0);
@@ -901,6 +1176,10 @@ export default function App() {
   const [newPal, setNewPal] = useState({ label: "", a: "", b: "", mode: "temporary" });
   const [newSku, setNewSku] = useState({ sku: "", name: "", en: "", boy: "", yuk: "", kg: "", qty: "", mode: "temporary" });
   const [msg,    setMsg]    = useState("");
+  const [orient, setOrient] = useState("A");
+  const [useKur,    setUseKur]    = useState(false);
+  const [kurInput,  setKurInput]  = useState("");
+  const [kurType,   setKurType]   = useState("USD");
   const fRef = useRef();
   const parseNum = (v) => parseFloat(String(v ?? "").trim().replace(",", "."));
 
@@ -966,8 +1245,59 @@ export default function App() {
     const parsed = parseNum(maxKgInput);
     return Number.isFinite(parsed) && parsed >= 1 ? parsed : maxKg;
   })();
-  const { bH, bW, bL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0);
+  // bestOption computed first (no dependency on oh) so autoSarkım can derive oh from it
+  const bestOption = useMemo(() => {
+    const ohOptions = autoSarkım ? [0, 5, 15] : [0];
+    const orientOptions = ["A", "B", "C"];
+    let bestFit = null;
+    let bestAny = null;
+    for (const p of allPallets) {
+      for (const ohOpt of ohOptions) {
+        for (const ort of orientOptions) {
+          const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
+          const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, liveMaxH, liveMaxKg, sku?.kg || 0);
+          const truckPallets = packTruck(packed.effA, packed.effB, truckL, truckW).length;
+          const count = packed.cols * packed.rows * packed.layers;
+          if (count <= 0) continue;
+          const candidateKg = count * (sku?.kg || 0);
+          const candidateH = PALLET_BASE_H + packed.layers * tH;
+          const fits = candidateH <= liveMaxH && candidateKg <= liveMaxKg;
+          const truckBoxes = truckPallets * count;
+          const candidate = {
+            pallet: p.label,
+            count,
+            truckPallets,
+            truckBoxes,
+            layers: packed.layers,
+            cols: packed.cols,
+            rows: packed.rows,
+            oh: ohOpt,
+            orient: ort,
+            fits,
+            h: candidateH,
+            kg: candidateKg,
+          };
+          if (!bestAny || candidate.truckBoxes > bestAny.truckBoxes) bestAny = candidate;
+          if (!candidate.fits) continue;
+          if (!bestFit) { bestFit = candidate; continue; }
+          const bestScore = [bestFit.truckBoxes, bestFit.count, -bestFit.h, -bestFit.kg];
+          const nextScore = [candidate.truckBoxes, candidate.count, -candidate.h, -candidate.kg];
+          for (let i = 0; i < nextScore.length; i++) {
+            if (nextScore[i] > bestScore[i]) { bestFit = candidate; break; }
+            if (nextScore[i] < bestScore[i]) break;
+          }
+        }
+      }
+    }
+    return { bestFit, bestAny };
+  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, liveMaxH, liveMaxKg, autoSarkım, truckL, truckW]);
+
+  const oh = autoSarkım ? manualOh : 0;
+
+  const { bH, bW, bL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, orient);
   const basePack = packPallet(bL, bW, bH, pal.a, pal.b, oh, liveMaxH, liveMaxKg, sku?.kg || 0);
+  const effPalA = basePack.effA;
+  const effPalB = basePack.effB;
   const { cols, rows, layers } = basePack;
   const perLayer = cols * rows;
   const effectiveLayers = Math.max(0, layers + layerAdjust);
@@ -980,53 +1310,8 @@ export default function App() {
   const extraLayerCount = perLayer > 0 ? Math.ceil(Math.max(0, extraBoxes) / perLayer) : 0;
   const visualLayers = effectiveLayers + extraLayerCount;
   const stkH = PALLET_BASE_H + visualLayers * bH;
-  const bestOption = useMemo(() => {
-    const ohOptions = [0, 5, 15];
-    let bestFit = null;
-    let bestAny = null;
-    for (const p of allPallets) {
-      const truckPallets = packTruck(p.a, p.b).length;
-      for (const ohOpt of ohOptions) {
-        const packed = packPallet(bL, bW, bH, p.a, p.b, ohOpt, liveMaxH, liveMaxKg, sku?.kg || 0);
-        const count = packed.cols * packed.rows * packed.layers;
-        if (count <= 0) continue;
-        const candidateKg = count * (sku?.kg || 0);
-        const candidateH = PALLET_BASE_H + packed.layers * bH;
-        const fits = candidateH <= liveMaxH && candidateKg <= liveMaxKg;
-        const orientation = (packed.boxL === bL && packed.boxW === bW) ? "Normal" : "Dondurulmus";
-        const truckBoxes = truckPallets * count;
-        const candidate = {
-          pallet: p.label,
-          count,
-          truckPallets,
-          truckBoxes,
-          layers: packed.layers,
-          cols: packed.cols,
-          rows: packed.rows,
-          oh: ohOpt,
-          orientation,
-          fits,
-          h: candidateH,
-          kg: candidateKg,
-        };
-        if (!bestAny || candidate.truckBoxes > bestAny.truckBoxes) bestAny = candidate;
-        if (!candidate.fits) continue;
-        if (!bestFit) {
-          bestFit = candidate;
-          continue;
-        }
-        const bestScore = [bestFit.truckBoxes, bestFit.count, -bestFit.h, -bestFit.kg];
-        const nextScore = [candidate.truckBoxes, candidate.count, -candidate.h, -candidate.kg];
-        for (let i = 0; i < nextScore.length; i++) {
-          if (nextScore[i] > bestScore[i]) { bestFit = candidate; break; }
-          if (nextScore[i] < bestScore[i]) break;
-        }
-      }
-    }
-    return { bestFit, bestAny };
-  }, [allPallets, bL, bW, bH, liveMaxH, liveMaxKg, sku?.kg]);
   const layoutState = useMemo(() => {
-    const boundsOk = placements.every((p) => p.x >= 0 && p.y >= 0 && p.x + p.w <= TL && p.y + p.h <= TW);
+    const boundsOk = placements.every((p) => p.x >= 0 && p.y >= 0 && p.x + p.w <= truckL && p.y + p.h <= truckW);
     let overlapOk = true;
     for (let i = 0; i < placements.length; i++) {
       for (let j = i + 1; j < placements.length; j++) {
@@ -1042,10 +1327,10 @@ export default function App() {
       overlapOk,
       valid: boundsOk && overlapOk,
     };
-  }, [placements]);
+  }, [placements, truckL, truckW]);
   const autoPlacements = useMemo(
-    () => packTruck(pal.a, pal.b).map((p, i) => ({ ...p, id: `auto-${i}` })),
-    [pal.a, pal.b]
+    () => packTruck(effPalA, effPalB, truckL, truckW).map((p, i) => ({ ...p, id: `auto-${i}` })),
+    [effPalA, effPalB, truckL, truckW]
   );
   useEffect(() => {
     setPlacements(autoPlacements);
@@ -1059,6 +1344,15 @@ export default function App() {
   const nPal = placements.length;
   const nItm = nPal * ipp;
   const nTon = nPal * pKg / 1000;
+
+  const unitFiyat     = sku?.fiyat || 0;
+  const liveKur       = useKur ? (parseNum(kurInput) || 1) : 1;
+  const unitCountPerPlacement = ipp;
+  const paletMaliyeti = useKur
+    ? (unitFiyat * unitCountPerPlacement) / liveKur   // TL ÷ kur → döviz
+    : unitFiyat * unitCountPerPlacement;              // TL
+  const tirMaliyeti   = paletMaliyeti * nPal;
+  const currencySymbol = useKur ? (kurType === "USD" ? "$" : "€") : "₺";
 
   const card = { background:THEME.cardBg, borderRadius:12, padding:"16px 18px", border:`1px solid ${THEME.border}` };
   const SL   = { fontSize:11, color:THEME.textPrimary, fontWeight:900, letterSpacing:1.2,
@@ -1092,6 +1386,28 @@ export default function App() {
     }
     setMaxKgInput(String(maxKg));
     setMsg("⚠ Maks ağırlık değeri geçersiz. Önceki değer korundu.");
+  };
+
+  const commitTruckL = () => {
+    const parsed = parseNum(truckLInput);
+    if (Number.isFinite(parsed) && parsed >= 100) {
+      setTruckL(parsed);
+      setTruckLInput(String(parsed));
+      return;
+    }
+    setTruckLInput(String(truckL));
+    setMsg("⚠ Tır uzunluğu geçersiz. Önceki değer korundu.");
+  };
+
+  const commitTruckW = () => {
+    const parsed = parseNum(truckWInput);
+    if (Number.isFinite(parsed) && parsed >= 100) {
+      setTruckW(parsed);
+      setTruckWInput(String(parsed));
+      return;
+    }
+    setTruckWInput(String(truckW));
+    setMsg("⚠ Tır genişliği geçersiz. Önceki değer korundu.");
   };
 
   const addCustomPallet = () => {
@@ -1136,9 +1452,9 @@ export default function App() {
 
   const addPalletToTruck = (rotated = false) => {
     const p = rotated
-      ? { w: pal.a, h: pal.b, paAlongL: true }
-      : { w: pal.b, h: pal.a, paAlongL: false };
-    const free = findFreeSpot(placements, p.w, p.h);
+      ? { w: effPalA, h: effPalB, paAlongL: true }
+      : { w: effPalB, h: effPalA, paAlongL: false };
+    const free = findFreeSpot(placements, p.w, p.h, truckL, truckW);
     if (!free) {
       setMsg("⚠ Tır içinde boş yer bulunamadı.");
       return;
@@ -1162,7 +1478,7 @@ export default function App() {
         next = next.map((p) => {
           if (p.id !== id) return p;
           const candidate = { ...p, w: p.h, h: p.w, paAlongL: !p.paAlongL };
-          return validPlacement(candidate, next, p.id) ? candidate : p;
+          return validPlacement(candidate, next, p.id, truckL, truckW) ? candidate : p;
         });
       }
       return next;
@@ -1172,6 +1488,11 @@ export default function App() {
   const resetTruckLayout = () => {
     setPlacements(autoPlacements);
     setSelectedPlacementIds([]);
+  };
+
+  const deleteCustomPallet = () => {
+    setCustomPallets(prev => prev.filter(p => p._id !== pal._id));
+    setPalI(0);
   };
 
   const addExtraBoxes = () => {
@@ -1208,7 +1529,7 @@ export default function App() {
             <span style={{ fontSize:12, color:THEME.textMuted, fontWeight:700, marginLeft:8, verticalAlign:"middle" }}>v3.2</span>
           </h1>
           <p style={{ margin:"3px 0 0", fontSize:13, color:THEME.textMuted }}>
-            CSV + Aranabilir SKU + İnteraktif Tır Haritası · Tır: {TL}×{TW}cm · Limit: {liveMaxH}cm / {liveMaxKg}kg
+            CSV + Aranabilir SKU + İnteraktif Tır Haritası · Tır: {truckL}×{truckW}cm · Limit: {liveMaxH}cm / {liveMaxKg}kg
           </p>
         </div>
         {msg && (
@@ -1246,27 +1567,56 @@ export default function App() {
 
         <div style={{ flex:"0 1 175px", minWidth:140 }}>
           <span style={SL}>Palet Tipi</span>
-          <select style={SEL} value={palI} onChange={e => setPalI(+e.target.value)}>
-            {allPallets.map((p, i) => <option key={p._id || i} value={i}>{p.label}{p.source === "custom" ? " (özel)" : ""}</option>)}
-          </select>
+          <div style={{ display:"flex", gap:5, alignItems:"center" }}>
+            <select style={{ ...SEL, flex:1 }} value={palI} onChange={e => setPalI(+e.target.value)}>
+              {allPallets.map((p, i) => <option key={p._id || i} value={i}>{p.label}{p.source === "custom" ? " (özel)" : ""}</option>)}
+            </select>
+            {pal.source === "custom" && (
+              <button onClick={deleteCustomPallet} title="Paleti sil" style={{
+                flexShrink:0, padding:"6px 9px", borderRadius:8, cursor:"pointer",
+                fontSize:13, fontWeight:900, border:`1px solid #F87171`,
+                background:"rgba(248,113,113,0.12)", color:"#F87171", lineHeight:1 }}>
+                ✕
+              </button>
+            )}
+          </div>
         </div>
 
         <div style={{ flexShrink:0 }}>
           <span style={SL}>Sarkım</span>
-          <div style={{ display:"flex", gap:4 }}>
-            {[0, 5, 15].map(v => {
-              const on = oh === v;
-              return (
-                <button key={v} onClick={() => setOh(v)} style={{
-                  padding:"6px 12px", borderRadius:8, cursor:"pointer", fontSize:11.5,
-                  border:`1.5px solid ${on ? col : THEME.border}`,
-                  background: on ? alpha(col, 0.11) : THEME.panelBgStrong,
-                  color: on ? col : THEME.textMuted,
-                  fontWeight: on ? 800 : 500, transition:"all 0.18s" }}>
-                  {v === 0 ? "Yok" : `${v}cm`}
-                </button>
-              );
-            })}
+          <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+            <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer",
+              userSelect:"none", padding:"6px 10px", borderRadius:8,
+              border:`1.5px solid ${autoSarkım ? col : THEME.border}`,
+              background: autoSarkım ? alpha(col, 0.11) : THEME.panelBgStrong,
+              transition:"all 0.18s" }}>
+              <input type="checkbox" checked={autoSarkım}
+                onChange={e => setAutoSarkım(e.target.checked)}
+                style={{ width:13, height:13, cursor:"pointer", accentColor:col }} />
+              <span style={{ fontSize:11.5, fontWeight: autoSarkım ? 800 : 500,
+                color: autoSarkım ? col : THEME.textMuted }}>
+                Sarkım
+              </span>
+              {autoSarkım && oh > 0 && (
+                <span style={{ fontSize:11, color:col, fontWeight:900 }}>({oh}cm)</span>
+              )}
+            </label>
+            <div style={{ display:"flex", gap:4, opacity: autoSarkım ? 1 : 0.35,
+              pointerEvents: autoSarkım ? "auto" : "none" }}>
+              {[0, 5, 15].map(v => {
+                const on = manualOh === v;
+                return (
+                  <button key={v} onClick={() => setManualOh(v)} style={{
+                    padding:"6px 12px", borderRadius:8, cursor:"pointer", fontSize:11.5,
+                    border:`1.5px solid ${on ? col : THEME.border}`,
+                    background: on ? alpha(col, 0.11) : THEME.panelBgStrong,
+                    color: on ? col : THEME.textMuted,
+                    fontWeight: on ? 800 : 500, transition:"all 0.18s" }}>
+                    {v === 0 ? "Yok" : `${v}cm`}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
         <div style={{ flex:"1 1 270px", minWidth:200 }}>
@@ -1396,12 +1746,13 @@ export default function App() {
         </span>
         {oh > 0 && (
           <span style={{ fontSize:11, color:"#F59E0B" }}>
-            + Sarkım ±{oh}cm → Eff. Alan: {pal.a+2*oh}×{pal.b+2*oh} cm
+            + Sarkım modu {oh === 15 ? "15" : "5"} → Eff. Alan: {effPalA}×{effPalB} cm
+            {oh === 15 ? " (sunta + gerekirse ekstra taşma)" : ""}
           </span>
         )}
         {bestOption?.bestFit ? (
           <span style={{ fontSize:11.5, color:"#86EFAC", fontWeight:700 }}>
-            En Optimal (Limitlere Uygun): {bestOption.bestFit.pallet} · {bestOption.bestFit.orientation} ·
+            En Optimal (Limitlere Uygun): {bestOption.bestFit.pallet} · Yön {bestOption.bestFit.orient} ·
             {" "}Sarkim {bestOption.bestFit.oh === 0 ? "Yok" : `+${bestOption.bestFit.oh}cm`} ·
             {" "}{bestOption.bestFit.cols}x{bestOption.bestFit.rows}x{bestOption.bestFit.layers} = {bestOption.bestFit.count} kutu/palet ·
             {" "}Tirda {bestOption.bestFit.truckPallets} palet ({bestOption.bestFit.truckBoxes} kutu)
@@ -1415,7 +1766,7 @@ export default function App() {
       </div>
 
       {/* MAIN GRID */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:10, marginBottom:10 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) 420px", gap:12, marginBottom:10 }}>
         <div style={card}>
           <span style={SL}>📦 İzometrik Palet Görünümü · Kutu Ekle/Çıkar Aktif</span>
           <div style={{ background:THEME.panelBg, borderRadius:9, padding:"10px",
@@ -1428,6 +1779,7 @@ export default function App() {
               col={col}
               pack={pack}
               extraBoxes={extraBoxes}
+              orient={orient}
             />
           </div>
           <div style={{ display:"flex", gap:10, flexWrap:"wrap", fontSize:13, color:THEME.textMuted, alignItems:"center" }}>
@@ -1461,27 +1813,132 @@ export default function App() {
             extraBoxes={extraBoxes}
             theme={THEME}
           />
+
+          {/* ── ORIENTATION SELECTOR ── */}
+          {(() => {
+            const [bS, bM, bBL] = [sku?.en||0, sku?.boy||0, sku?.yuk||0].sort((a,b)=>a-b);
+            const orientFaces = {
+              A: `${bBL}×${bM} cm`,
+              B: `${bS}×${bBL} cm`,
+              C: `${bS}×${bM} cm`,
+            };
+            return (
+              <div style={{ marginTop:12, borderTop:`1px solid ${THEME.borderSoft}`, paddingTop:10 }}>
+                <span style={{ fontSize:10, color:THEME.textMuted, fontWeight:900, letterSpacing:1.5,
+                  textTransform:"uppercase", display:"block", marginBottom:8 }}>
+                  Paket Yüzey Yönü
+                </span>
+                <div style={{ display:"flex", gap:10, alignItems:"flex-start" }}>
+                  <div style={{ flex:"0 0 auto", background:THEME.panelBg, borderRadius:8,
+                    padding:"8px", width:220 }}>
+                    <OrientBox en={sku?.en||0} boy={sku?.boy||0} yuk={sku?.yuk||0}
+                      activeOrient={orient} col={col} />
+                  </div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:6, flex:1 }}>
+                    {["A","B","C"].map(v => {
+                      const on = orient === v;
+                      return (
+                        <button key={v} onClick={() => setOrient(v)} style={{
+                          width:"100%", padding:"8px 10px", borderRadius:8, cursor:"pointer",
+                          fontSize:12, border:`1.5px solid ${on ? col : THEME.border}`,
+                          background: on ? alpha(col, 0.15) : THEME.panelBgStrong,
+                          color: on ? col : THEME.textMuted,
+                          fontWeight: on ? 900 : 500, transition:"all 0.18s",
+                          textAlign:"left", display:"flex", alignItems:"center", gap:8,
+                        }}>
+                          <span style={{ fontWeight:900, fontSize:15, minWidth:16 }}>{v}</span>
+                          <span style={{ fontSize:11, opacity:0.9 }}>{orientFaces[v]}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
-        <div style={card}>
-          <span style={SL}>📊 Yük Analizi</span>
+        <div style={{ ...card, padding:"20px 22px" }}>
+          <span style={{ ...SL, fontSize:13, marginBottom:13 }}>📊 Yük Analizi</span>
           <Gauge lbl="Yükleme Yüksekliği" val={stkH} max={liveMaxH}  unit="cm" theme={THEME} />
-          <Gauge lbl="Palet Ağırlığı"     val={pKg}  max={liveMaxKg} unit="kg" theme={THEME} />
-          <div style={{ borderTop:`1px solid ${THEME.borderSoft}`, margin:"9px 0 7px" }} />
+          <Gauge lbl="Palet Ağırlığı" val={pKg}  max={liveMaxKg} unit="kg" theme={THEME} />
+          <div style={{ borderTop:`1px solid ${THEME.borderSoft}`, margin:"12px 0 9px" }} />
           <StatRow k="Ürün (SKU)"        v={sku.sku} vc={col} theme={THEME} />
-          <StatRow k="Palet Tipi"        v={pal.label} theme={THEME} />
-          <StatRow k="Kat Başına Kutu"   v={`${cols}×${rows} = ${cols*rows}`} theme={THEME} />
-          <StatRow k="Toplam Kat"        v={visualLayers} theme={THEME} />
+          <StatRow k="Palet Tipi" v={pal.label} theme={THEME} />
+          <StatRow k="Kat Başına Kutu" v={`${cols}×${rows} = ${cols*rows}`} theme={THEME} />
+          <StatRow k="Toplam Kat" v={visualLayers} theme={THEME} />
           <StatRow k="Palet Başına (aktif)" v={`${ipp} adet`} theme={THEME} />
-          <StatRow k="Tırdaki Palet"     v={`${nPal} adet`} theme={THEME} />
+          <StatRow k="Tırdaki Palet" v={`${nPal} adet`} theme={THEME} />
           <StatRow k="Toplam Kutu"       v={nItm.toLocaleString()} theme={THEME} />
           <StatRow k="Toplam Yük"        v={`${nTon.toFixed(2)} ton`} theme={THEME} />
-          <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginTop:10 }}>
-            <Badge ok={stkH <= liveMaxH}      lbl="YÜKSEKLİK" />
-            <Badge ok={pKg  <= liveMaxKg}     lbl="AĞIRLIK" />
+          <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:12 }}>
+            <Badge ok={stkH <= liveMaxH} lbl="YÜKSEKLİK" />
+            <Badge ok={pKg <= liveMaxKg} lbl="AĞIRLIK" />
             <Badge ok={cols > 0 && rows > 0 && layers > 0} lbl="SIĞIYOR" />
             <Badge ok={layoutState.valid} lbl="TIR YERLEŞİMİ" />
             <Badge ok={!!bestOption?.bestFit} lbl="OPTIMAL LIMIT" />
+          </div>
+
+          {/* ── COST SECTION ── */}
+          <div style={{ marginTop:16, borderTop:`1px solid ${THEME.borderSoft}`, paddingTop:13 }}>
+            <span style={{ fontSize:12, color:THEME.textMuted, fontWeight:900, letterSpacing:1.5,
+              textTransform:"uppercase", display:"block", marginBottom:10 }}>
+              Maliyet Hesabı
+            </span>
+            <StatRow
+              k="Gerçek Alış Fiyatı"
+              v={unitFiyat > 0 ? `₺${unitFiyat.toLocaleString("tr-TR")}` : "—"}
+              theme={THEME}
+            />
+            <div style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0",
+              borderBottom:`1px solid ${THEME.borderSoft}`, flexWrap:"wrap" }}>
+              <label style={{ display:"flex", alignItems:"center", gap:5, cursor:"pointer",
+                fontSize:14, color:THEME.textSecondary, whiteSpace:"nowrap" }}>
+                <input type="checkbox" checked={useKur} onChange={e => setUseKur(e.target.checked)}
+                  style={{ width:15, height:15, cursor:"pointer", accentColor:col }} />
+                Güncel Kur
+              </label>
+              {useKur && (
+                <>
+                  <input
+                    type="text" inputMode="decimal"
+                    value={kurInput}
+                    onChange={e => setKurInput(e.target.value)}
+                    placeholder="Kur değeri"
+                    style={{ flex:1, minWidth:70, background:THEME.panelBgStrong,
+                      color:THEME.textPrimary, border:`1px solid ${THEME.border}`,
+                      borderRadius:7, padding:"7px 9px", fontSize:14, outline:"none" }}
+                  />
+                  <div style={{ display:"flex", borderRadius:7, overflow:"hidden",
+                    border:`1px solid ${THEME.border}` }}>
+                    {["USD","EUR"].map(t => (
+                      <button key={t} onClick={() => setKurType(t)} style={{
+                        padding:"7px 11px", fontSize:13, fontWeight:800, cursor:"pointer",
+                        background: kurType === t ? alpha(col, 0.25) : THEME.panelBgStrong,
+                        color: kurType === t ? col : THEME.textMuted,
+                        border:"none", transition:"all 0.15s",
+                      }}>{t}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <StatRow
+              k="Palet Maliyeti"
+              v={unitFiyat > 0
+                ? `${currencySymbol}${paletMaliyeti.toLocaleString("tr-TR", {maximumFractionDigits:2})}`
+                : "—"}
+              vc={unitFiyat > 0 ? "#86EFAC" : undefined}
+              theme={THEME}
+            />
+            <StatRow
+              k="Tır Maliyeti"
+              v={unitFiyat > 0
+                ? `${currencySymbol}${tirMaliyeti.toLocaleString("tr-TR", {maximumFractionDigits:2})}`
+                : "—"}
+              vc={unitFiyat > 0 ? "#FCD34D" : undefined}
+              theme={THEME}
+            />
           </div>
         </div>
       </div>
@@ -1495,6 +1952,44 @@ export default function App() {
             <b style={{ color:THEME.textPrimary }}>{nPal}</b> palet · Seçili: <b style={{ color:"#FCD34D" }}>{selectedPlacementIds.length}</b> · Ctrl/Shift ile çoklu seçim
           </span>
         </div>
+        <div style={{ fontSize:13, color:THEME.textMuted, marginBottom:8 }}>
+          Tır Ölçüleri:
+          <span style={{ display:"inline-flex", alignItems:"center", gap:6, marginLeft:6, flexWrap:"wrap" }}>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={truckLInput}
+              onChange={(e) => setTruckLInput(e.target.value)}
+              onBlur={commitTruckL}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              style={{ width:66, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"4px 6px", fontSize:12 }}
+              title="Tır uzunluğu (cm)"
+            />
+            ×
+            <input
+              type="text"
+              inputMode="decimal"
+              value={truckWInput}
+              onChange={(e) => setTruckWInput(e.target.value)}
+              onBlur={commitTruckW}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              style={{ width:66, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"4px 6px", fontSize:12 }}
+              title="Tır genişliği (cm)"
+            />
+            ×
+            <input
+              type="text"
+              inputMode="decimal"
+              value={maxHInput}
+              onChange={(e) => setMaxHInput(e.target.value)}
+              onBlur={commitMaxH}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              style={{ width:66, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"4px 6px", fontSize:12 }}
+              title="Tır yükseklik limiti (cm)"
+            />
+            <b style={{ color:THEME.textSecondary }}>cm</b>
+          </span>
+        </div>
         <div style={{ background:THEME.panelBg, borderRadius:9, padding:"12px 10px" }}>
           <TruckMap
             placements={placements}
@@ -1505,6 +2000,8 @@ export default function App() {
             fpA={fpA}
             fpB={fpB}
             theme={THEME}
+            truckL={truckL}
+            truckW={truckW}
           />
         </div>
         <div style={{ display:"flex", gap:8, marginTop:12, flexWrap:"wrap" }}>
@@ -1517,7 +2014,9 @@ export default function App() {
         <div style={{ display:"flex", gap:16, marginTop:10, fontSize:12, flexWrap:"wrap" }}>
           <div style={{ display:"flex", alignItems:"center", gap:5 }}>
             <div style={{ width:12, height:12, borderRadius:2, background:"#7B5B1C", border:"0.5px solid #3D2D0E" }} />
-            <span style={{ color:THEME.textSecondary }}>Palet ({pal.a}×{pal.b}cm) · {nPal} adet</span>
+            <span style={{ color:THEME.textSecondary }}>
+              Palet {oh > 0 ? `(Eff. ${effPalA}×${effPalB}cm)` : `(${pal.a}×${pal.b}cm)`} · {nPal} adet
+            </span>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:5 }}>
             <div style={{ width:12, height:12, borderRadius:2, background:alpha(col, 0.74) }} />
@@ -1526,6 +2025,14 @@ export default function App() {
           <div style={{ display:"flex", alignItems:"center", gap:5 }}>
             <div style={{ width:12, height:12, borderRadius:2, background:"rgba(239,68,68,0.4)" }} />
             <span style={{ color:THEME.textSecondary }}>Boş Alan</span>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+            <div style={{ width:12, height:12, borderRadius:2, background:"rgba(245,158,11,0.55)", border:"0.5px dashed #F59E0B" }} />
+            <span style={{ color:THEME.textSecondary }}>Paletten taşan paket</span>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+            <div style={{ width:12, height:12, borderRadius:2, background:"rgba(239,68,68,0.58)", border:"0.5px dashed #F87171" }} />
+            <span style={{ color:THEME.textSecondary }}>Tır dışı paket taşması</span>
           </div>
         </div>
       </div>
