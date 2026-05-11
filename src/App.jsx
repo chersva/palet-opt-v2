@@ -1174,7 +1174,7 @@ export default function App() {
   const [extraBoxInput, setExtraBoxInput] = useState("1");
   const [quickAddPanel, setQuickAddPanel] = useState("none");
   const [newPal, setNewPal] = useState({ label: "", a: "", b: "", mode: "temporary" });
-  const [newSku, setNewSku] = useState({ sku: "", name: "", en: "", boy: "", yuk: "", kg: "", qty: "", mode: "temporary" });
+  const [newSku, setNewSku] = useState({ sku: "", name: "", en: "", boy: "", yuk: "", kg: "", qty: "", fiyat: "", mode: "temporary" });
   const [msg,    setMsg]    = useState("");
   const [orient, setOrient] = useState("A");
   const [useKur,    setUseKur]    = useState(false);
@@ -1222,7 +1222,7 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(
       LS_SKUS_KEY,
-      JSON.stringify(customSkus.filter((s) => s.persist).map(({ sku, name, qty, en, boy, yuk, kg }) => ({ sku, name, qty, en, boy, yuk, kg })))
+      JSON.stringify(customSkus.filter((s) => s.persist).map(({ sku, name, qty, en, boy, yuk, kg, fiyat }) => ({ sku, name, qty, en, boy, yuk, kg, fiyat })))
     );
   }, [customSkus]);
 
@@ -1432,6 +1432,7 @@ export default function App() {
     const yuk = parseNum(newSku.yuk);
     const kg = parseNum(newSku.kg);
     const qty = parseNum(newSku.qty || 0);
+    const fiyat = parseNum(newSku.fiyat || 0);
     if (!(en > 0 && boy > 0 && yuk > 0 && kg >= 0)) {
       setMsg("⚠ Ürün için en, boy, yükseklik ve kg değerlerini doğru girin.");
       return;
@@ -1440,12 +1441,12 @@ export default function App() {
       _id: uid("custom-sku"),
       sku: (newSku.sku || `MAN-${customSkus.length + 1}`).trim(),
       name: (newSku.name || "Manuel Ürün").trim(),
-      en, boy, yuk, kg, qty,
+      en, boy, yuk, kg, qty, fiyat: Number.isFinite(fiyat) && fiyat > 0 ? fiyat : 0,
       persist: newSku.mode === "persistent",
     };
     setCustomSkus((prev) => [...prev, item]);
     setSkuI(skus.length);
-    setNewSku({ sku: "", name: "", en: "", boy: "", yuk: "", kg: "", qty: "", mode: newSku.mode });
+    setNewSku({ sku: "", name: "", en: "", boy: "", yuk: "", kg: "", qty: "", fiyat: "", mode: newSku.mode });
     setQuickAddPanel("none");
     setMsg(`✓ Geçici simülasyon ürünü eklendi (${item.sku}).`);
   };
@@ -1717,6 +1718,7 @@ export default function App() {
               <input type="text" inputMode="decimal" value={newSku.yuk} onChange={(e) => setNewSku((s) => ({ ...s, yuk: e.target.value }))} placeholder="Yük." style={SEL} />
               <input type="text" inputMode="decimal" value={newSku.kg} onChange={(e) => setNewSku((s) => ({ ...s, kg: e.target.value }))} placeholder="Kg" style={SEL} />
               <input type="text" inputMode="decimal" value={newSku.qty} onChange={(e) => setNewSku((s) => ({ ...s, qty: e.target.value }))} placeholder="Adet" style={SEL} />
+              <input type="text" inputMode="decimal" value={newSku.fiyat} onChange={(e) => setNewSku((s) => ({ ...s, fiyat: e.target.value }))} placeholder="Gerçek alış fiyatı" style={SEL} />
               <select value={newSku.mode} onChange={(e) => setNewSku((s) => ({ ...s, mode: e.target.value }))} style={SEL}>
                 <option value="temporary">Geçici</option>
                 <option value="persistent">Kalıcı</option>
