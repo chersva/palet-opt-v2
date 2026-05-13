@@ -1297,6 +1297,14 @@ export default function App() {
     const parsed = parseNum(truckTonInput);
     return Number.isFinite(parsed) && parsed >= 0.1 ? parsed : truckTonLimit;
   })();
+  const liveTruckL = (() => {
+    const parsed = parseNum(truckLInput);
+    return Number.isFinite(parsed) && parsed >= 100 ? parsed : truckL;
+  })();
+  const liveTruckW = (() => {
+    const parsed = parseNum(truckWInput);
+    return Number.isFinite(parsed) && parsed >= 100 ? parsed : truckW;
+  })();
   const truckTonKg = liveTruckTon * 1000;
   const bulkProductHeightLimit = Math.max(0, liveTruckH - 30);
   const truckBasedPalletProductLimit = Math.max(0, liveTruckH - livePalletBaseH);
@@ -1329,7 +1337,7 @@ export default function App() {
     if (bulkLoad) {
       for (const ort of ["A", "B", "C"]) {
         const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
-        const placements = packTruck(tL, tW, truckL, truckW);
+        const placements = packTruck(tL, tW, liveTruckL, liveTruckW);
         const unitsPerTruck = placements.length;
         if (unitsPerTruck <= 0) continue;
         const byH = tH > 0 ? Math.floor(bulkProductHeightLimit / tH) : 0;
@@ -1364,7 +1372,7 @@ export default function App() {
           for (const ort of orientOptions) {
             const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
           const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
-            const truckPallets = packTruck(packed.effA, packed.effB, truckL, truckW).length;
+            const truckPallets = packTruck(packed.effA, packed.effB, liveTruckL, liveTruckW).length;
             const count = packed.cols * packed.rows * packed.layers;
             if (count <= 0) continue;
             const candidateKg = count * (sku?.kg || 0);
@@ -1408,7 +1416,7 @@ export default function App() {
       }
     }
     return { bestFit, bestAny };
-  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, truckL, truckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
+  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
 
   const orientGlobalBest = useMemo(() => {
     const out = {};
@@ -1416,7 +1424,7 @@ export default function App() {
       let best = null;
       const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
       if (bulkLoad) {
-        const placements = packTruck(tL, tW, truckL, truckW);
+        const placements = packTruck(tL, tW, liveTruckL, liveTruckW);
         const unitsPerTruck = placements.length;
         if (unitsPerTruck > 0) {
           const byH = tH > 0 ? Math.floor(bulkProductHeightLimit / tH) : 0;
@@ -1440,7 +1448,7 @@ export default function App() {
             const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
             const count = packed.cols * packed.rows * packed.layers;
             if (count <= 0) continue;
-            const truckPallets = packTruck(packed.effA, packed.effB, truckL, truckW).length;
+            const truckPallets = packTruck(packed.effA, packed.effB, liveTruckL, liveTruckW).length;
             const candidateKg = count * (sku?.kg || 0);
             const candidateProductH = packed.layers * tH;
             const candidateTruckKg = candidateKg * truckPallets;
@@ -1469,7 +1477,7 @@ export default function App() {
       out[ort] = best;
     }
     return out;
-  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, truckL, truckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
+  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
 
   const oh = autoSarkım ? manualOh : 0;
 
@@ -1492,7 +1500,7 @@ export default function App() {
   const productLoadH = visualLayers * bH;
   const palletTotalHeightLimit = livePalletMaxH + livePalletBaseH;
   const layoutState = useMemo(() => {
-    const boundsOk = placements.every((p) => p.x >= 0 && p.y >= 0 && p.x + p.w <= truckL && p.y + p.h <= truckW);
+    const boundsOk = placements.every((p) => p.x >= 0 && p.y >= 0 && p.x + p.w <= liveTruckL && p.y + p.h <= liveTruckW);
     let overlapOk = true;
     for (let i = 0; i < placements.length; i++) {
       for (let j = i + 1; j < placements.length; j++) {
@@ -1508,13 +1516,13 @@ export default function App() {
       overlapOk,
       valid: boundsOk && overlapOk,
     };
-  }, [placements, truckL, truckW]);
+  }, [placements, liveTruckL, liveTruckW]);
   const autoPlacements = useMemo(() => {
     const base = bulkLoad
-      ? packTruck(bL, bW, truckL, truckW)
-      : packTruck(effPalA, effPalB, truckL, truckW);
+      ? packTruck(bL, bW, liveTruckL, liveTruckW)
+      : packTruck(effPalA, effPalB, liveTruckL, liveTruckW);
     return base.map((p, i) => ({ ...p, id: `auto-${i}` }));
-  }, [bulkLoad, bL, bW, effPalA, effPalB, truckL, truckW]);
+  }, [bulkLoad, bL, bW, effPalA, effPalB, liveTruckL, liveTruckW]);
   useEffect(() => {
     setPlacements(autoPlacements);
     setSelectedPlacementIds([]);
@@ -1565,8 +1573,8 @@ export default function App() {
     : unitFiyat * unitCountPerPlacement;              // TL
   const tirMaliyeti   = useKur ? (unitFiyat * nItm) / liveKur : unitFiyat * nItm;
   const currencySymbol = useKur ? (kurType === "USD" ? "$" : "€") : "₺";
-  const totalM2 = (truckL * truckW) / 10000;
-  const totalM3 = (truckL * truckW * liveTruckH) / 1_000_000;
+  const totalM2 = (liveTruckL * liveTruckW) / 10000;
+  const totalM3 = (liveTruckL * liveTruckW * liveTruckH) / 1_000_000;
   const doluM2 = placements.reduce((sum, p) => sum + (p.w * p.h) / 10000, 0);
   const boxVolumeM3 = (bL * bW * bH) / 1_000_000;
   const totalBoxVolumeM3 = nItm * boxVolumeM3;
@@ -1741,7 +1749,7 @@ export default function App() {
     const p = rotated
       ? { w: unitA, h: unitB, paAlongL: true }
       : { w: unitB, h: unitA, paAlongL: false };
-    const free = findFreeSpot(placements, p.w, p.h, truckL, truckW);
+    const free = findFreeSpot(placements, p.w, p.h, liveTruckL, liveTruckW);
     if (!free) {
       setMsg("⚠ Tır içinde boş yer bulunamadı.");
       return;
@@ -1765,7 +1773,7 @@ export default function App() {
         next = next.map((p) => {
           if (p.id !== id) return p;
           const candidate = { ...p, w: p.h, h: p.w, paAlongL: !p.paAlongL };
-          return validPlacement(candidate, next, p.id, truckL, truckW) ? candidate : p;
+          return validPlacement(candidate, next, p.id, liveTruckL, liveTruckW) ? candidate : p;
         });
       }
       return next;
@@ -1816,7 +1824,7 @@ export default function App() {
             <span style={{ fontSize:12, color:THEME.textMuted, fontWeight:700, marginLeft:8, verticalAlign:"middle" }}>v3.2</span>
           </h1>
           <p style={{ margin:"3px 0 0", fontSize:13, color:THEME.textMuted }}>
-            CSV + Aranabilir SKU + İnteraktif Tır Haritası · Tır: {truckL}×{truckW}cm ·
+            CSV + Aranabilir SKU + İnteraktif Tır Haritası · Tır: {liveTruckL}×{liveTruckW}cm ·
             {" "}Palet Limiti: ürün {livePalletMaxH}cm (toplam {palletTotalHeightLimit}cm) / {livePalletMaxKg}kg ·
             {" "}Tır Limiti: {liveTruckH}cm / {liveTruckTon.toFixed(1)} ton
           </p>
@@ -2447,8 +2455,8 @@ export default function App() {
               fpA={fpA}
               fpB={fpB}
               theme={THEME}
-              truckL={truckL}
-              truckW={truckW}
+              truckL={liveTruckL}
+              truckW={liveTruckW}
               showPackageOverlay={!bulkLoad}
               bulkMode={bulkLoad}
             />
