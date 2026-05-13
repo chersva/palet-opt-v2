@@ -1306,7 +1306,6 @@ export default function App() {
     return Number.isFinite(parsed) && parsed >= 100 ? parsed : truckW;
   })();
   const truckTonKg = liveTruckTon * 1000;
-  const totalLoadLimitKg = truckTonKg;
   const bulkProductHeightLimit = Math.max(0, liveTruckH - 30);
   const truckBasedPalletProductLimit = Math.max(0, liveTruckH - livePalletBaseH);
   const effectivePalletProductLimit = Math.min(livePalletMaxH, truckBasedPalletProductLimit);
@@ -1372,17 +1371,23 @@ export default function App() {
         for (const ohOpt of ohOptions) {
           for (const ort of orientOptions) {
             const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
-          const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, totalLoadLimitKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
+            const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
             const truckPallets = packTruck(packed.effA, packed.effB, liveTruckL, liveTruckW).length;
-            const count = packed.cols * packed.rows * packed.layers;
+            const perLayerCount = packed.cols * packed.rows;
+            if (perLayerCount <= 0) continue;
+            const maxLayersByTruckTon = (sku?.kg || 0) > 0 && truckPallets > 0
+              ? Math.floor(truckTonKg / (truckPallets * perLayerCount * (sku?.kg || 0)))
+              : Number.MAX_SAFE_INTEGER;
+            const candidateLayers = Math.max(0, Math.min(packed.layers, maxLayersByTruckTon));
+            const count = perLayerCount * candidateLayers;
             if (count <= 0) continue;
             const candidateKg = count * (sku?.kg || 0);
-            const candidateProductH = packed.layers * tH;
+            const candidateProductH = candidateLayers * tH;
             const candidateTruckKg = candidateKg * truckPallets;
             const candidateTotalH = livePalletBaseH + candidateProductH;
             const fits = (
               candidateProductH <= livePalletMaxH &&
-              candidateKg <= totalLoadLimitKg &&
+              candidateKg <= livePalletMaxKg &&
               candidateTotalH <= liveTruckH &&
               candidateTruckKg <= truckTonKg
             );
@@ -1393,7 +1398,7 @@ export default function App() {
               count,
               truckPallets,
               truckBoxes,
-              layers: packed.layers,
+              layers: candidateLayers,
               cols: packed.cols,
               rows: packed.rows,
               oh: ohOpt,
@@ -1417,7 +1422,7 @@ export default function App() {
       }
     }
     return { bestFit, bestAny };
-  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, totalLoadLimitKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
+  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
 
   const orientGlobalBest = useMemo(() => {
     const out = {};
@@ -1446,17 +1451,23 @@ export default function App() {
         const ohOptions = autoSarkım ? [0, 5, 15] : [0];
         for (const p of allPallets) {
           for (const ohOpt of ohOptions) {
-            const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, totalLoadLimitKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
-            const count = packed.cols * packed.rows * packed.layers;
-            if (count <= 0) continue;
+            const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
             const truckPallets = packTruck(packed.effA, packed.effB, liveTruckL, liveTruckW).length;
+            const perLayerCount = packed.cols * packed.rows;
+            if (perLayerCount <= 0) continue;
+            const maxLayersByTruckTon = (sku?.kg || 0) > 0 && truckPallets > 0
+              ? Math.floor(truckTonKg / (truckPallets * perLayerCount * (sku?.kg || 0)))
+              : Number.MAX_SAFE_INTEGER;
+            const candidateLayers = Math.max(0, Math.min(packed.layers, maxLayersByTruckTon));
+            const count = perLayerCount * candidateLayers;
+            if (count <= 0) continue;
             const candidateKg = count * (sku?.kg || 0);
-            const candidateProductH = packed.layers * tH;
+            const candidateProductH = candidateLayers * tH;
             const candidateTruckKg = candidateKg * truckPallets;
             const candidateTotalH = livePalletBaseH + candidateProductH;
             const fits = (
               candidateProductH <= livePalletMaxH &&
-              candidateKg <= totalLoadLimitKg &&
+              candidateKg <= livePalletMaxKg &&
               candidateTotalH <= liveTruckH &&
               candidateTruckKg <= truckTonKg
             );
@@ -1478,25 +1489,30 @@ export default function App() {
       out[ort] = best;
     }
     return out;
-  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, totalLoadLimitKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
+  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
 
   const oh = autoSarkım ? manualOh : 0;
 
   const { bH, bW, bL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, orient);
-  const basePack = packPallet(bL, bW, bH, pal.a, pal.b, oh, effectivePalletProductLimit, totalLoadLimitKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
+  const basePack = packPallet(bL, bW, bH, pal.a, pal.b, oh, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
   const effPalA = basePack.effA;
   const effPalB = basePack.effB;
   const { cols, rows, layers } = basePack;
+  const nPal = placements.length;
   const perLayer = cols * rows;
   const effectiveLayers = Math.max(0, layers + layerAdjust);
-  const pack = { ...basePack, layers: effectiveLayers };
+  const tonnageLayerCap = (!bulkLoad && (sku?.kg || 0) > 0 && nPal > 0 && perLayer > 0)
+    ? Math.floor(truckTonKg / (nPal * perLayer * (sku?.kg || 0)))
+    : Number.MAX_SAFE_INTEGER;
+  const effectiveLayersByTon = bulkLoad ? effectiveLayers : Math.max(0, Math.min(effectiveLayers, tonnageLayerCap));
+  const pack = { ...basePack, layers: effectiveLayersByTon };
   const fpA  = cols * pack.boxL;
   const fpB  = rows * pack.boxW;
-  const ippRaw = cols * rows * effectiveLayers;
+  const ippRaw = cols * rows * effectiveLayersByTon;
   const ipp  = Math.max(0, ippRaw + extraBoxes);
   const pKg  = ipp * (sku?.kg || 0);
   const extraLayerCount = perLayer > 0 ? Math.ceil(Math.max(0, extraBoxes) / perLayer) : 0;
-  const visualLayers = effectiveLayers + extraLayerCount;
+  const visualLayers = effectiveLayersByTon + extraLayerCount;
   const stkH = livePalletBaseH + visualLayers * bH;
   const productLoadH = visualLayers * bH;
   const palletTotalHeightLimit = livePalletMaxH + livePalletBaseH;
@@ -1523,7 +1539,7 @@ export default function App() {
       ? packTruck(bL, bW, liveTruckL, liveTruckW)
       : packTruck(effPalA, effPalB, liveTruckL, liveTruckW);
     return base.map((p, i) => ({ ...p, id: `auto-${i}` }));
-  }, [bulkLoad, bL, bW, effPalA, effPalB, liveTruckL, liveTruckW]);
+  }, [bulkLoad, bL, bW, effPalA, effPalB, liveTruckL, liveTruckW, truckTonKg]);
   useEffect(() => {
     setPlacements(autoPlacements);
     setSelectedPlacementIds([]);
@@ -1534,7 +1550,6 @@ export default function App() {
     setExtraBoxes(0);
   }, [bulkLoad]);
 
-  const nPal = placements.length;
   const bulkBaseLayers = useMemo(() => {
     if (!bulkLoad || nPal <= 0 || bH <= 0) return 0;
     const byH = Math.floor(bulkProductHeightLimit / bH);
@@ -1557,10 +1572,11 @@ export default function App() {
   const stackHeight = bulkLoad ? bulkHeight : stkH;
   const heightGaugeVal = bulkLoad ? stackHeight : productLoadH;
   const heightGaugeMax = bulkLoad ? bulkProductHeightLimit : livePalletMaxH;
-  const weightGaugeVal = totalKg;
-  const weightGaugeMax = totalLoadLimitKg;
+  const weightGaugeVal = bulkLoad ? totalKg : placementKg;
+  const weightGaugeMax = livePalletMaxKg;
   const nItm = totalItems;
   const nTon = totalKg / 1000;
+  const truckMapKey = `${liveTruckL}-${liveTruckW}-${liveTruckH}-${liveTruckTon}-${bulkLoad ? "bulk" : "pallet"}-${orient}-${fpA}-${fpB}-${nPal}-${placementUnits}-${Math.round(truckTonKg)}`;
 
   const skuFiyat = sku?.fiyat || 0;
   const manualUnit = Math.max(0, parseNum(manualPriceInput) || 0);
@@ -1826,7 +1842,7 @@ export default function App() {
           </h1>
           <p style={{ margin:"3px 0 0", fontSize:13, color:THEME.textMuted }}>
             CSV + Aranabilir SKU + İnteraktif Tır Haritası · Tır: {liveTruckL}×{liveTruckW}cm ·
-            {" "}Palet Limiti: ürün {livePalletMaxH}cm (toplam {palletTotalHeightLimit}cm) ·
+            {" "}Palet Limiti: ürün {livePalletMaxH}cm (toplam {palletTotalHeightLimit}cm) / {livePalletMaxKg}kg ·
             {" "}Tır Limiti: {liveTruckH}cm / {liveTruckTon.toFixed(1)} ton
           </p>
         </div>
@@ -2251,7 +2267,7 @@ export default function App() {
             theme={THEME}
           />
           <Gauge
-            lbl="Toplam Yük"
+            lbl={bulkLoad ? "Tır Toplam Ağırlık" : "Palet Ağırlığı"}
             val={weightGaugeVal}
             max={weightGaugeMax}
             unit="kg"
@@ -2270,13 +2286,15 @@ export default function App() {
           <StatRow k={bulkLoad ? "Yerleşim Başına (aktif)" : "Palet Başına (aktif)"} v={`${placementUnits} adet`} theme={THEME} />
           <StatRow k={bulkLoad ? "Tırdaki Yerleşim" : "Tırdaki Palet"} v={`${nPal} adet`} theme={THEME} />
           <StatRow k="Toplam Kutu"       v={nItm.toLocaleString()} theme={THEME} />
-          <StatRow k="Toplam Yük"        v={`${nTon.toFixed(2)} ton`} theme={THEME} />
+          <StatRow k="Tırdaki Toplam Yük" v={`${nTon.toFixed(2)} ton`} theme={THEME} />
+          <StatRow k="Toplam Yük Limiti" v={`${livePalletMaxKg.toLocaleString("tr-TR")} kg`} theme={THEME} />
+          <StatRow k="Tırdaki Toplam Yük Limiti" v={`${liveTruckTon.toFixed(2)} ton`} theme={THEME} />
           <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:12 }}>
             <Badge ok={heightGaugeVal <= heightGaugeMax} lbl="YÜKSEKLİK" />
             <Badge ok={bulkLoad ? (stackHeight <= bulkProductHeightLimit) : (stkH <= liveTruckH)} lbl="TIR YÜKSEKLİK" />
-            <Badge ok={weightGaugeVal <= weightGaugeMax} lbl="TOPLAM YÜK" />
+            <Badge ok={weightGaugeVal <= weightGaugeMax} lbl="AĞIRLIK" />
             <Badge ok={totalKg <= truckTonKg} lbl="TIR TONAJI" />
-            <Badge ok={bulkLoad ? (nPal > 0 && bulkLayers > 0) : (cols > 0 && rows > 0 && layers > 0)} lbl="SIĞIYOR" />
+            <Badge ok={bulkLoad ? (nPal > 0 && bulkLayers > 0) : (cols > 0 && rows > 0 && effectiveLayersByTon > 0)} lbl="SIĞIYOR" />
             <Badge ok={layoutState.valid} lbl="TIR YERLEŞİMİ" />
             <Badge ok={!!bestOption?.bestFit} lbl="OPTIMAL LIMIT" />
           </div>
@@ -2448,6 +2466,7 @@ export default function App() {
         <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) 240px", gap:10, alignItems:"stretch" }}>
           <div style={{ background:THEME.panelBg, borderRadius:9, padding:"12px 10px" }}>
             <TruckMap
+              key={truckMapKey}
               placements={placements}
               setPlacements={setPlacements}
               selectedIds={selectedPlacementIds}
