@@ -1580,16 +1580,24 @@ export default function App() {
 
   const skuFiyat = sku?.fiyat || 0;
   const manualUnit = Math.max(0, parseNum(manualPriceInput) || 0);
-  const manualToTlRate = manualPriceCurrency === "TL" ? 1 : (parseNum(kurInput) || 0);
-  const manualPriceTl = manualUnit > 0 ? manualUnit * manualToTlRate : 0;
-  const unitFiyat = skuFiyat > 0 ? skuFiyat : manualPriceTl;
-  const liveKur       = useKur ? (parseNum(kurInput) || 1) : 1;
+  const actualUnitPrice = manualUnit > 0 ? manualUnit : skuFiyat;
+  const actualPriceCurrency = manualUnit > 0 ? manualPriceCurrency : "TL";
+  const liveKur = parseNum(kurInput);
   const unitCountPerPlacement = placementUnits;
-  const paletMaliyeti = useKur
-    ? (unitFiyat * unitCountPerPlacement) / liveKur   // TL ÷ kur → döviz
-    : unitFiyat * unitCountPerPlacement;              // TL
-  const tirMaliyeti   = useKur ? (unitFiyat * nItm) / liveKur : unitFiyat * nItm;
-  const currencySymbol = useKur ? (kurType === "USD" ? "$" : "€") : "₺";
+  let effectiveUnitPrice = actualUnitPrice;
+  let effectiveCurrency = actualPriceCurrency;
+  if (useKur && actualPriceCurrency === "TL") {
+    if (Number.isFinite(liveKur) && liveKur > 0) {
+      effectiveUnitPrice = actualUnitPrice / liveKur;
+      effectiveCurrency = kurType;
+    } else {
+      effectiveUnitPrice = 0;
+      effectiveCurrency = kurType;
+    }
+  }
+  const paletMaliyeti = effectiveUnitPrice * unitCountPerPlacement;
+  const tirMaliyeti = paletMaliyeti * nPal;
+  const currencySymbol = effectiveCurrency === "USD" ? "$" : (effectiveCurrency === "EUR" ? "€" : "₺");
   const totalM2 = (liveTruckL * liveTruckW) / 10000;
   const totalM3 = (liveTruckL * liveTruckW * liveTruckH) / 1_000_000;
   const doluM2 = placements.reduce((sum, p) => sum + (p.w * p.h) / 10000, 0);
@@ -2307,37 +2315,30 @@ export default function App() {
             </span>
             <StatRow
               k="Gerçek Alış Fiyatı"
-              v={unitFiyat > 0 ? `₺${unitFiyat.toLocaleString("tr-TR")}` : "—"}
+              v={actualUnitPrice > 0 ? `${currencySymbol}${effectiveUnitPrice.toLocaleString("tr-TR", { maximumFractionDigits: 4 })}` : "—"}
               theme={THEME}
             />
-            {skuFiyat <= 0 && (
-              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 0",
-                borderBottom:`1px solid ${THEME.borderSoft}`, flexWrap:"wrap" }}>
-                <span style={{ fontSize:12.5, color:THEME.textMuted }}>Manuel fiyat</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={manualPriceInput}
-                  onChange={(e) => setManualPriceInput(e.target.value)}
-                  placeholder="Fiyat"
-                  style={{ flex:"1 1 90px", minWidth:70, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"7px 9px", fontSize:13 }}
-                />
-                <select
-                  value={manualPriceCurrency}
-                  onChange={(e) => setManualPriceCurrency(e.target.value)}
-                  style={{ ...SEL, width:"auto", padding:"7px 8px", fontSize:12.5 }}
-                >
-                  <option value="TL">TL</option>
-                  <option value="USD">USD</option>
-                  <option value="EUR">EUR</option>
-                </select>
-                {(manualPriceCurrency !== "TL") && (
-                  <span style={{ fontSize:10.5, color:THEME.textSubtle }}>
-                    Döviz fiyatı için kur alanına TL karşılığını girin.
-                  </span>
-                )}
-              </div>
-            )}
+            <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 0",
+              borderBottom:`1px solid ${THEME.borderSoft}`, flexWrap:"wrap" }}>
+              <span style={{ fontSize:12.5, color:THEME.textMuted }}>Gerçek alış (birim)</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={manualPriceInput}
+                onChange={(e) => setManualPriceInput(e.target.value)}
+                placeholder={skuFiyat > 0 ? `Varsayılan: ${skuFiyat}` : "Fiyat"}
+                style={{ flex:"1 1 90px", minWidth:70, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"7px 9px", fontSize:13 }}
+              />
+              <select
+                value={manualPriceCurrency}
+                onChange={(e) => setManualPriceCurrency(e.target.value)}
+                style={{ ...SEL, width:"auto", padding:"7px 8px", fontSize:12.5 }}
+              >
+                <option value="TL">TL</option>
+                <option value="USD">USD</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </div>
             <div style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0",
               borderBottom:`1px solid ${THEME.borderSoft}`, flexWrap:"wrap" }}>
               <label style={{ display:"flex", alignItems:"center", gap:5, cursor:"pointer",
@@ -2373,18 +2374,18 @@ export default function App() {
             </div>
             <StatRow
               k={bulkLoad ? "Yerleşim Maliyeti" : "Palet Maliyeti"}
-              v={unitFiyat > 0
+              v={paletMaliyeti > 0
                 ? `${currencySymbol}${paletMaliyeti.toLocaleString("tr-TR", {maximumFractionDigits:2})}`
                 : "—"}
-              vc={unitFiyat > 0 ? "#86EFAC" : undefined}
+              vc={paletMaliyeti > 0 ? "#86EFAC" : undefined}
               theme={THEME}
             />
             <StatRow
               k="Tır Maliyeti"
-              v={unitFiyat > 0
+              v={tirMaliyeti > 0
                 ? `${currencySymbol}${tirMaliyeti.toLocaleString("tr-TR", {maximumFractionDigits:2})}`
                 : "—"}
-              vc={unitFiyat > 0 ? "#FCD34D" : undefined}
+              vc={tirMaliyeti > 0 ? "#FCD34D" : undefined}
               theme={THEME}
             />
           </div>
