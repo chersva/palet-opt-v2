@@ -5,6 +5,7 @@ const C30 = Math.cos(Math.PI / 6);
 const TL = 1360, TW = 245; // default truck length/width (cm)
 const PALLET_BASE_H = 15;
 const DEFAULT_MAX_H = 205;
+const DEFAULT_TRUCK_H = 245;
 const DEFAULT_MAX_KG = 1000;
 const GRID_STEP_CM = 2;
 const LS_PALLETS_KEY = "palet-opt-custom-pallets";
@@ -235,20 +236,39 @@ function getSarkimPolicy(mode) {
 }
 
 // ── PALLET PACKING ─────────────────────────────────────────────────────────
-function packPallet(bL, bW, bH, pA, pB, oh, maxH, maxKg, itemKg, palletBaseH = PALLET_BASE_H) {
+function packPallet(bL, bW, bH, pA, pB, oh, maxProductH, maxKg, itemKg, palletBaseH = PALLET_BASE_H, partialSarkim = false, partialSarkimMode = "overflow") {
   const { baseAxisExtra, maxAxisExtra } = getSarkimPolicy(oh);
-  const maxA = pA + maxAxisExtra;
-  const maxB = pB + maxAxisExtra;
-  const minA = pA + baseAxisExtra;
-  const minB = pB + baseAxisExtra;
-  const [c1, r1] = [Math.floor(maxA / bL), Math.floor(maxB / bW)];
-  const [c2, r2] = [Math.floor(maxA / bW), Math.floor(maxB / bL)];
-  const maxByHeight = Math.max(0, Math.floor((maxH - palletBaseH) / bH));
+  const maxByHeight = Math.max(0, Math.floor(maxProductH / bH));
 
   const evalPack = (cols, rows, boxL, boxW) => {
     const perLayer = Math.max(0, cols * rows);
     const usedA = cols * boxL;
     const usedB = rows * boxW;
+
+    const partialEnabled = partialSarkim && oh === 15;
+    const partial15 = partialEnabled && oh === 15;
+    const axisBase = (p, used) => {
+      if (!partialEnabled) return p + baseAxisExtra;
+      if (!partial15) return p;
+      const overflow = Math.max(0, used - p);
+      if (overflow <= 0) return p;
+      const boardAdd = partialSarkimMode === "fixed10" ? 20 : Math.min(20, overflow);
+      return p + boardAdd;
+    };
+    const axisMax = (p, used) => {
+      if (!partialEnabled) return p + maxAxisExtra;
+      if (!partial15) return p + 10;
+      const overflow = Math.max(0, used - p);
+      if (overflow <= 0) return p;
+      // Parcali 15 mode: total extension on a needed axis is capped to +20 (10+10).
+      const boardAdd = partialSarkimMode === "fixed10" ? 20 : Math.min(20, overflow);
+      return p + boardAdd;
+    };
+    const minA = axisBase(pA, usedA);
+    const minB = axisBase(pB, usedB);
+    const maxA = axisMax(pA, usedA);
+    const maxB = axisMax(pB, usedB);
+
     if (usedA > maxA || usedB > maxB) {
       return { cols, rows, layers: 0, boxL, boxW, effA: minA, effB: minB, score: 0 };
     }
@@ -265,6 +285,11 @@ function packPallet(bL, bW, bH, pA, pB, oh, maxH, maxKg, itemKg, palletBaseH = P
     return { cols, rows, layers, boxL, boxW, effA, effB, score };
   };
 
+  const partial15 = partialSarkim && oh === 15;
+  const globalMaxA = partial15 ? (pA + 20) : (pA + maxAxisExtra);
+  const globalMaxB = partial15 ? (pB + 20) : (pB + maxAxisExtra);
+  const [c1, r1] = [Math.floor(globalMaxA / bL), Math.floor(globalMaxB / bW)];
+  const [c2, r2] = [Math.floor(globalMaxA / bW), Math.floor(globalMaxB / bL)];
   const a = evalPack(Math.max(0, c1), Math.max(0, r1), bL, bW);
   const b = evalPack(Math.max(0, c2), Math.max(0, r2), bW, bL);
   const best = b.score > a.score ? b : a;
@@ -344,7 +369,7 @@ function IsoBox({ x, y, z, w, d, h, col, s, bf = 1, project = toIso }) {
 }
 
 // ── PALLET ISO VIEW ────────────────────────────────────────────────────────
-function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0, orient = "A" }) {
+function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0, orient = "A", palletBaseH = PALLET_BASE_H }) {
   const [yawDeg, setYawDeg] = useState(0);
   const dragRef = useRef(null);
   const { bH } = flatOrient(sku.en, sku.boy, sku.yuk, orient);
@@ -377,7 +402,7 @@ function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0, orient = "A" }
   const wxMax = Math.max(pa, offX + stackL);
   const wyMin = Math.min(0, offY);
   const wyMax = Math.max(pb, offY + stackD);
-  const wzMax = PALLET_BASE_H + (highestLayerIndex + 1) * bH;
+  const wzMax = palletBaseH + (highestLayerIndex + 1) * bH;
 
   const span = (wxMax - wxMin) + (wyMax - wyMin);
   const S = Math.min(2.5, Math.max(0.52, 330 / Math.max(1, span * C30)));
@@ -404,7 +429,7 @@ function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0, orient = "A" }
       boxList.push({
         x: offX + cx * boxL,
         y: offY + ry * boxW,
-        z: PALLET_BASE_H + ly * bH,
+        z: palletBaseH + ly * bH,
         bf,
         key: `${ly}-${ry}-${cx}-${i}`,
       });
@@ -413,7 +438,7 @@ function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0, orient = "A" }
   }
 
   const ohLine = oh > 0
-    ? [[0,0,PALLET_BASE_H],[pa,0,PALLET_BASE_H],[pa,pb,PALLET_BASE_H],[0,pb,PALLET_BASE_H],[0,0,PALLET_BASE_H]]
+    ? [[0,0,palletBaseH],[pa,0,palletBaseH],[pa,pb,palletBaseH],[0,pb,palletBaseH],[0,0,palletBaseH]]
         .map(([x, y, z]) => project(x, y, z, S).join(",")).join(" ")
     : null;
 
@@ -442,10 +467,10 @@ function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0, orient = "A" }
         <ellipse cx={scx} cy={scy + 7}
           rx={(pa + pb) * C30 * S * 0.42} ry={(pa + pb) * S * 0.085}
           fill="rgba(0,0,0,0.28)" filter="url(#ps-shadow)" />
-        <IsoBox x={0} y={0} z={0} w={pa} d={pb} h={PALLET_BASE_H} col="#7B5B1C" s={S} bf={1} project={project} />
+        <IsoBox x={0} y={0} z={0} w={pa} d={pb} h={palletBaseH} col="#7B5B1C" s={S} bf={1} project={project} />
         {[pa * 0.33, pa * 0.66].map((lx, i) => {
-          const [x1, y1] = project(lx, 0, PALLET_BASE_H, S);
-          const [x2, y2] = project(lx, pb, PALLET_BASE_H, S);
+          const [x1, y1] = project(lx, 0, palletBaseH, S);
+          const [x2, y2] = project(lx, pb, palletBaseH, S);
           return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
             stroke="rgba(0,0,0,0.11)" strokeWidth={0.8} />;
         })}
@@ -454,7 +479,7 @@ function PalletView({ sku, pa, pb, oh, col, pack, extraBoxes = 0, orient = "A" }
             w={boxL} d={boxW} h={bH} col={col} s={S} bf={b.bf} project={project} />
         ))}
         {(cols === 0 || rows === 0 || layers === 0) && (
-          <text x={project(pa/2, pb/2, PALLET_BASE_H+10, S)[0]} y={project(pa/2, pb/2, PALLET_BASE_H+10, S)[1]}
+          <text x={project(pa/2, pb/2, palletBaseH+10, S)[0]} y={project(pa/2, pb/2, palletBaseH+10, S)[1]}
             textAnchor="middle" fontSize={11} fill="#F87171" fontWeight={700}>
             ⚠ Ürün Palete Sığmıyor
           </text>
@@ -535,6 +560,8 @@ function TruckMap({
   readOnly = false,
   truckL = TL,
   truckW = TW,
+  showPackageOverlay = true,
+  bulkMode = false,
 }) {
   const SC = 0.9;
   const SNAP_DIST_CM = 4;
@@ -823,8 +850,8 @@ function TruckMap({
                 style={{ cursor: "grab" }}
               >
                 <rect x={px+0.4} y={py+0.4} width={pw-0.8} height={ph-0.8}
-                  fill="#7B5B1C"
-                  stroke={isSelected ? "#FCD34D" : "#3D2D0E"}
+                  fill={bulkMode ? alpha(col, 0.58) : "#7B5B1C"}
+                  stroke={isSelected ? "#FCD34D" : (bulkMode ? shade(col, 0.6) : "#3D2D0E")}
                   strokeWidth={isSelected ? 2.1 : 0.5}
                   rx={1.5} />
                 {[0.25, 0.5, 0.75].map((t, j) => longHoriz ? (
@@ -839,7 +866,7 @@ function TruckMap({
           })}
 
           {/* LAYER 2 — Package footprints centered on each pallet */}
-          {placements.map((p, i) => {
+          {showPackageOverlay && placements.map((p, i) => {
             const fpL = p.paAlongL ? fpA : fpB;
             const fpW = p.paAlongL ? fpB : fpA;
             if (fpL <= 0 || fpW <= 0) return null;
@@ -1157,16 +1184,27 @@ export default function App() {
   const [isDemo, setIsDemo] = useState(true);
   const [skuI,   setSkuI]   = useState(0);
   const [palI,   setPalI]   = useState(0);
+  const [useDefaultLimits, setUseDefaultLimits] = useState(true);
+  const [bulkLoad, setBulkLoad] = useState(false);
   const [autoSarkım, setAutoSarkım] = useState(true);
+  const [partialSarkim, setPartialSarkim] = useState(true);
+  const [partialSarkimMode, setPartialSarkimMode] = useState("overflow");
   const [manualOh,   setManualOh]   = useState(0);
   const [maxH, setMaxH] = useState(DEFAULT_MAX_H);
   const [maxKg, setMaxKg] = useState(DEFAULT_MAX_KG);
+  const [palletBaseH, setPalletBaseH] = useState(PALLET_BASE_H);
   const [truckL, setTruckL] = useState(TL);
   const [truckW, setTruckW] = useState(TW);
+  const [truckHeightLimit, setTruckHeightLimit] = useState(DEFAULT_TRUCK_H);
+  const [truckTonLimit, setTruckTonLimit] = useState(22);
+  const [useDefaultTruckDims, setUseDefaultTruckDims] = useState(true);
   const [maxHInput, setMaxHInput] = useState(String(DEFAULT_MAX_H));
   const [maxKgInput, setMaxKgInput] = useState(String(DEFAULT_MAX_KG));
+  const [palletBaseHInput, setPalletBaseHInput] = useState(String(PALLET_BASE_H));
   const [truckLInput, setTruckLInput] = useState(String(TL));
   const [truckWInput, setTruckWInput] = useState(String(TW));
+  const [truckHeightInput, setTruckHeightInput] = useState(String(DEFAULT_TRUCK_H));
+  const [truckTonInput, setTruckTonInput] = useState("22");
   const [placements, setPlacements] = useState([]);
   const [selectedPlacementIds, setSelectedPlacementIds] = useState([]);
   const [layerAdjust, setLayerAdjust] = useState(0);
@@ -1180,6 +1218,8 @@ export default function App() {
   const [useKur,    setUseKur]    = useState(false);
   const [kurInput,  setKurInput]  = useState("");
   const [kurType,   setKurType]   = useState("USD");
+  const [manualPriceInput, setManualPriceInput] = useState("");
+  const [manualPriceCurrency, setManualPriceCurrency] = useState("TL");
   const fRef = useRef();
   const parseNum = (v) => parseFloat(String(v ?? "").trim().replace(",", "."));
 
@@ -1237,65 +1277,204 @@ export default function App() {
   const sku = skus[skuI] || skus[0];
   const pal = allPallets[palI] || allPallets[0];
   const col = PALETTE[skuI % PALETTE.length];
-  const liveMaxH = (() => {
+  const livePalletMaxH = (() => {
     const parsed = parseNum(maxHInput);
-    return Number.isFinite(parsed) && parsed >= PALLET_BASE_H + 1 ? parsed : maxH;
+    return Number.isFinite(parsed) && parsed >= 1 ? parsed : maxH;
   })();
-  const liveMaxKg = (() => {
+  const livePalletMaxKg = (() => {
     const parsed = parseNum(maxKgInput);
     return Number.isFinite(parsed) && parsed >= 1 ? parsed : maxKg;
   })();
+  const livePalletBaseH = (() => {
+    const parsed = parseNum(palletBaseHInput);
+    return Number.isFinite(parsed) && parsed >= 1 ? parsed : palletBaseH;
+  })();
+  const liveTruckH = (() => {
+    const parsed = parseNum(truckHeightInput);
+    return Number.isFinite(parsed) && parsed >= 10 ? parsed : truckHeightLimit;
+  })();
+  const liveTruckTon = (() => {
+    const parsed = parseNum(truckTonInput);
+    return Number.isFinite(parsed) && parsed >= 0.1 ? parsed : truckTonLimit;
+  })();
+  const truckTonKg = liveTruckTon * 1000;
+  const bulkProductHeightLimit = Math.max(0, liveTruckH - 30);
+  const truckBasedPalletProductLimit = Math.max(0, liveTruckH - livePalletBaseH);
+  const effectivePalletProductLimit = Math.min(livePalletMaxH, truckBasedPalletProductLimit);
+  useEffect(() => {
+    if (!useDefaultLimits) return;
+    setMaxH(DEFAULT_MAX_H);
+    setMaxKg(DEFAULT_MAX_KG);
+    setPalletBaseH(PALLET_BASE_H);
+    setMaxHInput(String(DEFAULT_MAX_H));
+    setMaxKgInput(String(DEFAULT_MAX_KG));
+    setPalletBaseHInput(String(PALLET_BASE_H));
+  }, [useDefaultLimits]);
+  useEffect(() => {
+    if (!useDefaultTruckDims) return;
+    setTruckL(TL);
+    setTruckW(TW);
+    setTruckHeightLimit(DEFAULT_TRUCK_H);
+    setTruckTonLimit(22);
+    setTruckLInput(String(TL));
+    setTruckWInput(String(TW));
+    setTruckHeightInput(String(DEFAULT_TRUCK_H));
+    setTruckTonInput("22");
+  }, [useDefaultTruckDims]);
+
   // bestOption computed first (no dependency on oh) so autoSarkım can derive oh from it
   const bestOption = useMemo(() => {
-    const ohOptions = autoSarkım ? [0, 5, 15] : [0];
-    const orientOptions = ["A", "B", "C"];
     let bestFit = null;
     let bestAny = null;
-    for (const p of allPallets) {
-      for (const ohOpt of ohOptions) {
-        for (const ort of orientOptions) {
-          const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
-          const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, liveMaxH, liveMaxKg, sku?.kg || 0);
-          const truckPallets = packTruck(packed.effA, packed.effB, truckL, truckW).length;
-          const count = packed.cols * packed.rows * packed.layers;
-          if (count <= 0) continue;
-          const candidateKg = count * (sku?.kg || 0);
-          const candidateH = PALLET_BASE_H + packed.layers * tH;
-          const fits = candidateH <= liveMaxH && candidateKg <= liveMaxKg;
-          const truckBoxes = truckPallets * count;
-          const candidate = {
-            pallet: p.label,
-            count,
-            truckPallets,
-            truckBoxes,
-            layers: packed.layers,
-            cols: packed.cols,
-            rows: packed.rows,
-            oh: ohOpt,
-            orient: ort,
-            fits,
-            h: candidateH,
-            kg: candidateKg,
-          };
-          if (!bestAny || candidate.truckBoxes > bestAny.truckBoxes) bestAny = candidate;
-          if (!candidate.fits) continue;
-          if (!bestFit) { bestFit = candidate; continue; }
-          const bestScore = [bestFit.truckBoxes, bestFit.count, -bestFit.h, -bestFit.kg];
-          const nextScore = [candidate.truckBoxes, candidate.count, -candidate.h, -candidate.kg];
-          for (let i = 0; i < nextScore.length; i++) {
-            if (nextScore[i] > bestScore[i]) { bestFit = candidate; break; }
-            if (nextScore[i] < bestScore[i]) break;
+    if (bulkLoad) {
+      for (const ort of ["A", "B", "C"]) {
+        const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
+        const placements = packTruck(tL, tW, truckL, truckW);
+        const unitsPerTruck = placements.length;
+        if (unitsPerTruck <= 0) continue;
+        const byH = tH > 0 ? Math.floor(bulkProductHeightLimit / tH) : 0;
+        const byKg = (sku?.kg || 0) > 0 ? Math.floor(truckTonKg / (unitsPerTruck * (sku?.kg || 0))) : Number.MAX_SAFE_INTEGER;
+        const layers = Math.max(0, Math.min(byH, byKg));
+        if (layers <= 0) continue;
+        const truckBoxes = unitsPerTruck * layers;
+        const candidate = {
+          mode: "bulk",
+          pallet: "Dökme",
+          count: layers,
+          truckPallets: unitsPerTruck,
+          truckBoxes,
+          layers,
+          cols: 1,
+          rows: 1,
+          oh: 0,
+          orient: ort,
+          fits: true,
+          h: layers * tH,
+          kg: layers * (sku?.kg || 0),
+          truckKg: truckBoxes * (sku?.kg || 0),
+        };
+        if (!bestAny || candidate.truckBoxes > bestAny.truckBoxes) bestAny = candidate;
+        if (!bestFit || candidate.truckBoxes > bestFit.truckBoxes) bestFit = candidate;
+      }
+    } else {
+      const ohOptions = autoSarkım ? [0, 5, 15] : [0];
+      const orientOptions = ["A", "B", "C"];
+      for (const p of allPallets) {
+        for (const ohOpt of ohOptions) {
+          for (const ort of orientOptions) {
+            const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
+          const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
+            const truckPallets = packTruck(packed.effA, packed.effB, truckL, truckW).length;
+            const count = packed.cols * packed.rows * packed.layers;
+            if (count <= 0) continue;
+            const candidateKg = count * (sku?.kg || 0);
+            const candidateProductH = packed.layers * tH;
+            const candidateTruckKg = candidateKg * truckPallets;
+            const candidateTotalH = livePalletBaseH + candidateProductH;
+            const fits = (
+              candidateProductH <= livePalletMaxH &&
+              candidateKg <= livePalletMaxKg &&
+              candidateTotalH <= liveTruckH &&
+              candidateTruckKg <= truckTonKg
+            );
+            const truckBoxes = truckPallets * count;
+            const candidate = {
+              mode: "pallet",
+              pallet: p.label,
+              count,
+              truckPallets,
+              truckBoxes,
+              layers: packed.layers,
+              cols: packed.cols,
+              rows: packed.rows,
+              oh: ohOpt,
+              orient: ort,
+              fits,
+              h: candidateProductH,
+              kg: candidateKg,
+              truckKg: candidateTruckKg,
+            };
+            if (!bestAny || candidate.truckBoxes > bestAny.truckBoxes) bestAny = candidate;
+            if (!candidate.fits) continue;
+            if (!bestFit) { bestFit = candidate; continue; }
+            const bestScore = [bestFit.truckBoxes, bestFit.count, -bestFit.h, -bestFit.kg];
+            const nextScore = [candidate.truckBoxes, candidate.count, -candidate.h, -candidate.kg];
+            for (let i = 0; i < nextScore.length; i++) {
+              if (nextScore[i] > bestScore[i]) { bestFit = candidate; break; }
+              if (nextScore[i] < bestScore[i]) break;
+            }
           }
         }
       }
     }
     return { bestFit, bestAny };
-  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, liveMaxH, liveMaxKg, autoSarkım, truckL, truckW]);
+  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, truckL, truckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
+
+  const orientGlobalBest = useMemo(() => {
+    const out = {};
+    for (const ort of ["A", "B", "C"]) {
+      let best = null;
+      const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
+      if (bulkLoad) {
+        const placements = packTruck(tL, tW, truckL, truckW);
+        const unitsPerTruck = placements.length;
+        if (unitsPerTruck > 0) {
+          const byH = tH > 0 ? Math.floor(bulkProductHeightLimit / tH) : 0;
+          const byKg = (sku?.kg || 0) > 0 ? Math.floor(truckTonKg / (unitsPerTruck * (sku?.kg || 0))) : Number.MAX_SAFE_INTEGER;
+          const layers = Math.max(0, Math.min(byH, byKg));
+          if (layers > 0) {
+            const totalBoxes = unitsPerTruck * layers;
+            best = {
+              orient: ort,
+              mode: "bulk",
+              count: layers,
+              truckPallets: unitsPerTruck,
+              truckBoxes: totalBoxes,
+            };
+          }
+        }
+      } else {
+        const ohOptions = autoSarkım ? [0, 5, 15] : [0];
+        for (const p of allPallets) {
+          for (const ohOpt of ohOptions) {
+            const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
+            const count = packed.cols * packed.rows * packed.layers;
+            if (count <= 0) continue;
+            const truckPallets = packTruck(packed.effA, packed.effB, truckL, truckW).length;
+            const candidateKg = count * (sku?.kg || 0);
+            const candidateProductH = packed.layers * tH;
+            const candidateTruckKg = candidateKg * truckPallets;
+            const candidateTotalH = livePalletBaseH + candidateProductH;
+            const fits = (
+              candidateProductH <= livePalletMaxH &&
+              candidateKg <= livePalletMaxKg &&
+              candidateTotalH <= liveTruckH &&
+              candidateTruckKg <= truckTonKg
+            );
+            if (!fits) continue;
+            const candidate = {
+              orient: ort,
+              mode: "pallet",
+              pallet: p.label,
+              oh: ohOpt,
+              count,
+              truckPallets,
+              truckBoxes: truckPallets * count,
+              truckKg: candidateTruckKg,
+            };
+            if (!best || candidate.truckBoxes > best.truckBoxes) best = candidate;
+          }
+        }
+      }
+      out[ort] = best;
+    }
+    return out;
+  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, truckL, truckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
 
   const oh = autoSarkım ? manualOh : 0;
 
   const { bH, bW, bL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, orient);
-  const basePack = packPallet(bL, bW, bH, pal.a, pal.b, oh, liveMaxH, liveMaxKg, sku?.kg || 0);
+  const basePack = packPallet(bL, bW, bH, pal.a, pal.b, oh, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
   const effPalA = basePack.effA;
   const effPalB = basePack.effB;
   const { cols, rows, layers } = basePack;
@@ -1309,7 +1488,9 @@ export default function App() {
   const pKg  = ipp * (sku?.kg || 0);
   const extraLayerCount = perLayer > 0 ? Math.ceil(Math.max(0, extraBoxes) / perLayer) : 0;
   const visualLayers = effectiveLayers + extraLayerCount;
-  const stkH = PALLET_BASE_H + visualLayers * bH;
+  const stkH = livePalletBaseH + visualLayers * bH;
+  const productLoadH = visualLayers * bH;
+  const palletTotalHeightLimit = livePalletMaxH + livePalletBaseH;
   const layoutState = useMemo(() => {
     const boundsOk = placements.every((p) => p.x >= 0 && p.y >= 0 && p.x + p.w <= truckL && p.y + p.h <= truckW);
     let overlapOk = true;
@@ -1328,31 +1509,73 @@ export default function App() {
       valid: boundsOk && overlapOk,
     };
   }, [placements, truckL, truckW]);
-  const autoPlacements = useMemo(
-    () => packTruck(effPalA, effPalB, truckL, truckW).map((p, i) => ({ ...p, id: `auto-${i}` })),
-    [effPalA, effPalB, truckL, truckW]
-  );
+  const autoPlacements = useMemo(() => {
+    const base = bulkLoad
+      ? packTruck(bL, bW, truckL, truckW)
+      : packTruck(effPalA, effPalB, truckL, truckW);
+    return base.map((p, i) => ({ ...p, id: `auto-${i}` }));
+  }, [bulkLoad, bL, bW, effPalA, effPalB, truckL, truckW]);
   useEffect(() => {
     setPlacements(autoPlacements);
     setSelectedPlacementIds([]);
   }, [autoPlacements]);
-
   useEffect(() => {
-    setLayerAdjust((prev) => Math.max(-layers, prev));
-  }, [layers]);
+    setSelectedPlacementIds([]);
+    setLayerAdjust(0);
+    setExtraBoxes(0);
+  }, [bulkLoad]);
 
   const nPal = placements.length;
-  const nItm = nPal * ipp;
-  const nTon = nPal * pKg / 1000;
+  const bulkBaseLayers = useMemo(() => {
+    if (!bulkLoad || nPal <= 0 || bH <= 0) return 0;
+    const byH = Math.floor(bulkProductHeightLimit / bH);
+    const byKg = (sku?.kg || 0) > 0 ? Math.floor(truckTonKg / (nPal * (sku?.kg || 0))) : Number.MAX_SAFE_INTEGER;
+    return Math.max(0, Math.min(byH, byKg));
+  }, [bulkLoad, nPal, bH, bulkProductHeightLimit, sku?.kg, truckTonKg]);
+  useEffect(() => {
+    const minAdjust = bulkLoad ? -bulkBaseLayers : -layers;
+    setLayerAdjust((prev) => Math.max(minAdjust, prev));
+  }, [bulkLoad, bulkBaseLayers, layers]);
+  const bulkLayers = Math.max(0, bulkBaseLayers + layerAdjust);
+  const bulkItems = Math.max(0, nPal * bulkLayers + extraBoxes);
+  const bulkHeight = bulkLayers * bH;
+  const bulkKg = bulkItems * (sku?.kg || 0);
 
-  const unitFiyat     = sku?.fiyat || 0;
+  const placementUnits = bulkLoad ? bulkLayers : ipp;
+  const placementKg = bulkLoad ? (bulkLayers * (sku?.kg || 0)) : pKg;
+  const totalItems = bulkLoad ? bulkItems : nPal * ipp;
+  const totalKg = bulkLoad ? bulkKg : nPal * pKg;
+  const stackHeight = bulkLoad ? bulkHeight : stkH;
+  const heightGaugeVal = bulkLoad ? stackHeight : productLoadH;
+  const heightGaugeMax = bulkLoad ? bulkProductHeightLimit : livePalletMaxH;
+  const weightGaugeVal = bulkLoad ? totalKg : placementKg;
+  const weightGaugeMax = bulkLoad ? truckTonKg : livePalletMaxKg;
+  const nItm = totalItems;
+  const nTon = totalKg / 1000;
+
+  const skuFiyat = sku?.fiyat || 0;
+  const manualUnit = Math.max(0, parseNum(manualPriceInput) || 0);
+  const manualToTlRate = manualPriceCurrency === "TL" ? 1 : (parseNum(kurInput) || 0);
+  const manualPriceTl = manualUnit > 0 ? manualUnit * manualToTlRate : 0;
+  const unitFiyat = skuFiyat > 0 ? skuFiyat : manualPriceTl;
   const liveKur       = useKur ? (parseNum(kurInput) || 1) : 1;
-  const unitCountPerPlacement = ipp;
+  const unitCountPerPlacement = placementUnits;
   const paletMaliyeti = useKur
     ? (unitFiyat * unitCountPerPlacement) / liveKur   // TL ÷ kur → döviz
     : unitFiyat * unitCountPerPlacement;              // TL
-  const tirMaliyeti   = paletMaliyeti * nPal;
+  const tirMaliyeti   = useKur ? (unitFiyat * nItm) / liveKur : unitFiyat * nItm;
   const currencySymbol = useKur ? (kurType === "USD" ? "$" : "€") : "₺";
+  const totalM2 = (truckL * truckW) / 10000;
+  const totalM3 = (truckL * truckW * liveTruckH) / 1_000_000;
+  const doluM2 = placements.reduce((sum, p) => sum + (p.w * p.h) / 10000, 0);
+  const boxVolumeM3 = (bL * bW * bH) / 1_000_000;
+  const totalBoxVolumeM3 = nItm * boxVolumeM3;
+  const totalPalletBaseVolumeM3 = bulkLoad
+    ? 0
+    : placements.reduce((sum, p) => sum + (p.w * p.h * livePalletBaseH) / 1_000_000, 0);
+  const doluM3 = totalBoxVolumeM3 + totalPalletBaseVolumeM3;
+  const bosM2 = Math.max(0, totalM2 - doluM2);
+  const bosM3 = Math.max(0, totalM3 - doluM3);
 
   const card = { background:THEME.cardBg, borderRadius:12, padding:"16px 18px", border:`1px solid ${THEME.border}` };
   const SL   = { fontSize:11, color:THEME.textPrimary, fontWeight:900, letterSpacing:1.2,
@@ -1367,17 +1590,25 @@ export default function App() {
   const INPUT_COMMON = { ...SEL, padding: "6px 10px" };
 
   const commitMaxH = () => {
+    if (useDefaultLimits) {
+      setMaxHInput(String(DEFAULT_MAX_H));
+      return;
+    }
     const parsed = parseNum(maxHInput);
-    if (Number.isFinite(parsed) && parsed >= PALLET_BASE_H + 1) {
+    if (Number.isFinite(parsed) && parsed >= 1) {
       setMaxH(parsed);
       setMaxHInput(String(parsed));
       return;
     }
     setMaxHInput(String(maxH));
-    setMsg("⚠ Maks yükseklik değeri geçersiz. Önceki değer korundu.");
+    setMsg("⚠ Ürün max yükseklik değeri geçersiz. Önceki değer korundu.");
   };
 
   const commitMaxKg = () => {
+    if (useDefaultLimits) {
+      setMaxKgInput(String(DEFAULT_MAX_KG));
+      return;
+    }
     const parsed = parseNum(maxKgInput);
     if (Number.isFinite(parsed) && parsed >= 1) {
       setMaxKg(parsed);
@@ -1388,7 +1619,26 @@ export default function App() {
     setMsg("⚠ Maks ağırlık değeri geçersiz. Önceki değer korundu.");
   };
 
+  const commitPalletBaseH = () => {
+    if (useDefaultLimits) {
+      setPalletBaseHInput(String(PALLET_BASE_H));
+      return;
+    }
+    const parsed = parseNum(palletBaseHInput);
+    if (Number.isFinite(parsed) && parsed >= 1) {
+      setPalletBaseH(parsed);
+      setPalletBaseHInput(String(parsed));
+      return;
+    }
+    setPalletBaseHInput(String(palletBaseH));
+    setMsg("⚠ Palet taban yüksekliği geçersiz. Önceki değer korundu.");
+  };
+
   const commitTruckL = () => {
+    if (useDefaultTruckDims) {
+      setTruckLInput(String(TL));
+      return;
+    }
     const parsed = parseNum(truckLInput);
     if (Number.isFinite(parsed) && parsed >= 100) {
       setTruckL(parsed);
@@ -1400,6 +1650,10 @@ export default function App() {
   };
 
   const commitTruckW = () => {
+    if (useDefaultTruckDims) {
+      setTruckWInput(String(TW));
+      return;
+    }
     const parsed = parseNum(truckWInput);
     if (Number.isFinite(parsed) && parsed >= 100) {
       setTruckW(parsed);
@@ -1408,6 +1662,36 @@ export default function App() {
     }
     setTruckWInput(String(truckW));
     setMsg("⚠ Tır genişliği geçersiz. Önceki değer korundu.");
+  };
+
+  const commitTruckHeight = () => {
+    if (useDefaultTruckDims) {
+      setTruckHeightInput(String(DEFAULT_TRUCK_H));
+      return;
+    }
+    const parsed = parseNum(truckHeightInput);
+    if (Number.isFinite(parsed) && parsed >= 10) {
+      setTruckHeightLimit(parsed);
+      setTruckHeightInput(String(parsed));
+      return;
+    }
+    setTruckHeightInput(String(truckHeightLimit));
+    setMsg("⚠ Tır yükseklik limiti geçersiz. Önceki değer korundu.");
+  };
+
+  const commitTruckTon = () => {
+    if (useDefaultTruckDims) {
+      setTruckTonInput("22");
+      return;
+    }
+    const parsed = parseNum(truckTonInput);
+    if (Number.isFinite(parsed) && parsed >= 0.1) {
+      setTruckTonLimit(parsed);
+      setTruckTonInput(String(parsed));
+      return;
+    }
+    setTruckTonInput(String(truckTonLimit));
+    setMsg("⚠ Tır tonaj limiti geçersiz. Önceki değer korundu.");
   };
 
   const addCustomPallet = () => {
@@ -1452,9 +1736,11 @@ export default function App() {
   };
 
   const addPalletToTruck = (rotated = false) => {
+    const unitA = bulkLoad ? bL : effPalA;
+    const unitB = bulkLoad ? bW : effPalB;
     const p = rotated
-      ? { w: effPalA, h: effPalB, paAlongL: true }
-      : { w: effPalB, h: effPalA, paAlongL: false };
+      ? { w: unitA, h: unitB, paAlongL: true }
+      : { w: unitB, h: unitA, paAlongL: false };
     const free = findFreeSpot(placements, p.w, p.h, truckL, truckW);
     if (!free) {
       setMsg("⚠ Tır içinde boş yer bulunamadı.");
@@ -1530,7 +1816,9 @@ export default function App() {
             <span style={{ fontSize:12, color:THEME.textMuted, fontWeight:700, marginLeft:8, verticalAlign:"middle" }}>v3.2</span>
           </h1>
           <p style={{ margin:"3px 0 0", fontSize:13, color:THEME.textMuted }}>
-            CSV + Aranabilir SKU + İnteraktif Tır Haritası · Tır: {truckL}×{truckW}cm · Limit: {liveMaxH}cm / {liveMaxKg}kg
+            CSV + Aranabilir SKU + İnteraktif Tır Haritası · Tır: {truckL}×{truckW}cm ·
+            {" "}Palet Limiti: ürün {livePalletMaxH}cm (toplam {palletTotalHeightLimit}cm) / {livePalletMaxKg}kg ·
+            {" "}Tır Limiti: {liveTruckH}cm / {liveTruckTon.toFixed(1)} ton
           </p>
         </div>
         {msg && (
@@ -1566,63 +1854,29 @@ export default function App() {
           </div>}
         </div>
 
-        <div style={{ flex:"0 1 175px", minWidth:140 }}>
-          <span style={SL}>Palet Tipi</span>
-          <div style={{ display:"flex", gap:5, alignItems:"center" }}>
-            <select style={{ ...SEL, flex:1 }} value={palI} onChange={e => setPalI(+e.target.value)}>
-              {allPallets.map((p, i) => <option key={p._id || i} value={i}>{p.label}{p.source === "custom" ? " (özel)" : ""}</option>)}
-            </select>
-            {pal.source === "custom" && (
-              <button onClick={deleteCustomPallet} title="Paleti sil" style={{
-                flexShrink:0, padding:"6px 9px", borderRadius:8, cursor:"pointer",
-                fontSize:13, fontWeight:900, border:`1px solid #F87171`,
-                background:"rgba(248,113,113,0.12)", color:"#F87171", lineHeight:1 }}>
-                ✕
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div style={{ flexShrink:0 }}>
-          <span style={SL}>Sarkım</span>
-          <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-            <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer",
-              userSelect:"none", padding:"6px 10px", borderRadius:8,
-              border:`1.5px solid ${autoSarkım ? col : THEME.border}`,
-              background: autoSarkım ? alpha(col, 0.11) : THEME.panelBgStrong,
-              transition:"all 0.18s" }}>
-              <input type="checkbox" checked={autoSarkım}
-                onChange={e => setAutoSarkım(e.target.checked)}
-                style={{ width:13, height:13, cursor:"pointer", accentColor:col }} />
-              <span style={{ fontSize:11.5, fontWeight: autoSarkım ? 800 : 500,
-                color: autoSarkım ? col : THEME.textMuted }}>
-                Sarkım
-              </span>
-              {autoSarkım && oh > 0 && (
-                <span style={{ fontSize:11, color:col, fontWeight:900 }}>({oh}cm)</span>
-              )}
-            </label>
-            <div style={{ display:"flex", gap:4, opacity: autoSarkım ? 1 : 0.35,
-              pointerEvents: autoSarkım ? "auto" : "none" }}>
-              {[0, 5, 15].map(v => {
-                const on = manualOh === v;
-                return (
-                  <button key={v} onClick={() => setManualOh(v)} style={{
-                    padding:"6px 12px", borderRadius:8, cursor:"pointer", fontSize:11.5,
-                    border:`1.5px solid ${on ? col : THEME.border}`,
-                    background: on ? alpha(col, 0.11) : THEME.panelBgStrong,
-                    color: on ? col : THEME.textMuted,
-                    fontWeight: on ? 800 : 500, transition:"all 0.18s" }}>
-                    {v === 0 ? "Yok" : `${v}cm`}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
         <div style={{ flex:"1 1 270px", minWidth:200 }}>
           <span style={SL}>Yükleme Limitleri</span>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+          <div style={{ display:"flex", gap:8, marginBottom:7, flexWrap:"wrap" }}>
+            <label style={{ display:"flex", alignItems:"center", gap:5, fontSize:12, color:THEME.textSecondary, cursor:"pointer" }}>
+              <input
+                type="checkbox"
+                checked={useDefaultLimits}
+                onChange={(e) => setUseDefaultLimits(e.target.checked)}
+                style={{ accentColor: col }}
+              />
+              Default
+            </label>
+            <label style={{ display:"flex", alignItems:"center", gap:5, fontSize:12, color:THEME.textSecondary, cursor:"pointer" }}>
+              <input
+                type="checkbox"
+                checked={bulkLoad}
+                onChange={(e) => setBulkLoad(e.target.checked)}
+                style={{ accentColor: col }}
+              />
+              Dökme
+            </label>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
             <input
               type="text"
               inputMode="decimal"
@@ -1630,7 +1884,8 @@ export default function App() {
               onChange={(e) => setMaxHInput(e.target.value)}
               onBlur={commitMaxH}
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-              placeholder="Maks yükseklik (cm)"
+              placeholder="Ürün max yükseklik (cm)"
+              disabled={useDefaultLimits}
               style={INPUT_COMMON}
             />
             <input
@@ -1641,8 +1896,24 @@ export default function App() {
               onBlur={commitMaxKg}
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
               placeholder="Maks ağırlık (kg)"
+              disabled={useDefaultLimits}
               style={INPUT_COMMON}
             />
+            <input
+              type="text"
+              inputMode="decimal"
+              value={palletBaseHInput}
+              onChange={(e) => setPalletBaseHInput(e.target.value)}
+              onBlur={commitPalletBaseH}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              placeholder="Palet taban (cm)"
+              disabled={useDefaultLimits}
+              style={INPUT_COMMON}
+            />
+          </div>
+          <div style={{ marginTop:6, fontSize:11.5, color:THEME.textSubtle }}>
+            Palet taban yüksekliği: <b style={{ color:THEME.textSecondary }}>{livePalletBaseH} cm</b>
+            {" "}· Toplam paletli yükseklik limiti: <b style={{ color:THEME.textSecondary }}>{palletTotalHeightLimit} cm</b>
           </div>
         </div>
         <div style={{ flexShrink: 0 }}>
@@ -1738,6 +2009,9 @@ export default function App() {
         <span style={{ fontSize:11.5, color:THEME.textSecondary }}>
           Girdi [{sku.en}, {sku.boy}, {sku.yuk}] cm → Sırala →
         </span>
+        <span style={{ fontSize:11, color:THEME.textSecondary }}>
+          Ağırlık: <b>{sku.kg || 0} kg</b>
+        </span>
         <span style={{ fontSize:11 }}>
           <span style={{ color:THEME.textSubtle }}>H = </span>
           <b style={{ color:THEME.textSecondary }}>{bH} cm</b>
@@ -1754,10 +2028,9 @@ export default function App() {
         )}
         {bestOption?.bestFit ? (
           <span style={{ fontSize:11.5, color:"#86EFAC", fontWeight:700 }}>
-            En Optimal (Limitlere Uygun): {bestOption.bestFit.pallet} · Yön {bestOption.bestFit.orient} ·
-            {" "}Sarkim {bestOption.bestFit.oh === 0 ? "Yok" : `+${bestOption.bestFit.oh}cm`} ·
-            {" "}{bestOption.bestFit.cols}x{bestOption.bestFit.rows}x{bestOption.bestFit.layers} = {bestOption.bestFit.count} kutu/palet ·
-            {" "}Tirda {bestOption.bestFit.truckPallets} palet ({bestOption.bestFit.truckBoxes} kutu)
+            {bestOption.bestFit.mode === "bulk"
+              ? `En Optimal (Limitlere Uygun): Dökme · Yön ${bestOption.bestFit.orient} · ${bestOption.bestFit.count} kutu/yerleşim · Tırda ${bestOption.bestFit.truckPallets} yerleşim (${bestOption.bestFit.truckBoxes} kutu)`
+              : `En Optimal (Limitlere Uygun): ${bestOption.bestFit.pallet} · Yön ${bestOption.bestFit.orient} · Sarkim ${bestOption.bestFit.oh === 0 ? "Yok" : `+${bestOption.bestFit.oh}cm`} · ${bestOption.bestFit.cols}x${bestOption.bestFit.rows}x${bestOption.bestFit.layers} = ${bestOption.bestFit.count} kutu/palet · Tirda ${bestOption.bestFit.truckPallets} palet (${bestOption.bestFit.truckBoxes} kutu)`}
           </span>
         ) : (
           <span style={{ fontSize:11.5, color:"#FCA5A5", fontWeight:700 }}>
@@ -1782,16 +2055,19 @@ export default function App() {
               pack={pack}
               extraBoxes={extraBoxes}
               orient={orient}
+              palletBaseH={livePalletBaseH}
             />
           </div>
           <div style={{ display:"flex", gap:10, flexWrap:"wrap", fontSize:13, color:THEME.textMuted, alignItems:"center" }}>
-            <span>Palet: <b style={{ color:THEME.textSecondary }}>{pal.a}×{pal.b}×{PALLET_BASE_H}cm</b></span>
+            <span>{bulkLoad ? "Dökme Taban" : "Palet"}: <b style={{ color:THEME.textSecondary }}>{bulkLoad ? `${bL}×${bW}cm` : `${pal.a}×${pal.b}×${livePalletBaseH}cm`}</b></span>
             <span style={{ color:THEME.dim }}>·</span>
             <span>Kutu: <b style={{ color:THEME.textSecondary }}>{bL}×{bW}×{bH}cm</b></span>
             <span style={{ color:THEME.dim }}>·</span>
-            <span>Dizilim: <b style={{ color:col }}>{cols}×{rows}×{effectiveLayers} kat</b></span>
-            <span style={{ color:THEME.dim }}>·</span>
-            <span>Paket Tabanı: <b style={{ color:col }}>{fpA}×{fpB}cm</b></span>
+            <span>Dizilim: <b style={{ color:col }}>{bulkLoad ? `${nPal}×${bulkLayers} kat` : `${cols}×${rows}×${effectiveLayers} kat`}</b></span>
+            {!bulkLoad && <>
+              <span style={{ color:THEME.dim }}>·</span>
+              <span>Paket Tabanı: <b style={{ color:col }}>{fpA}×{fpB}cm</b></span>
+            </>}
             <span style={{ color:THEME.dim }}>·</span>
             <span>Aktif Kutu: <b style={{ color:"#86EFAC" }}>{ipp}</b></span>
             {extraBoxes > 0 && <>
@@ -1803,9 +2079,95 @@ export default function App() {
               <span style={{ color:"#F59E0B" }}>⚠ ±{oh}cm Sarkım</span>
             </>}
           </div>
+          <div style={{ marginTop:10, borderTop:`1px solid ${THEME.borderSoft}`, paddingTop:10, display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <div>
+              <span style={{ fontSize:10, color:THEME.textMuted, fontWeight:900, letterSpacing:1.3, textTransform:"uppercase", display:"block", marginBottom:6 }}>
+                Palet Tipi
+              </span>
+              <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                <select style={{ ...SEL, flex:1 }} value={palI} onChange={e => setPalI(+e.target.value)}>
+                  {allPallets.map((p, i) => <option key={p._id || i} value={i}>{p.label}{p.source === "custom" ? " (özel)" : ""}</option>)}
+                </select>
+                {pal.source === "custom" && (
+                  <button onClick={deleteCustomPallet} title="Paleti sil" style={{
+                    flexShrink:0, padding:"6px 9px", borderRadius:8, cursor:"pointer",
+                    fontSize:13, fontWeight:900, border:`1px solid #F87171`,
+                    background:"rgba(248,113,113,0.12)", color:"#F87171", lineHeight:1 }}>
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <span style={{ fontSize:10, color:THEME.textMuted, fontWeight:900, letterSpacing:1.3, textTransform:"uppercase", display:"block", marginBottom:6 }}>
+                Sarkım
+              </span>
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer",
+                  userSelect:"none", padding:"6px 10px", borderRadius:8,
+                  border:`1.5px solid ${autoSarkım ? col : THEME.border}`,
+                  background: autoSarkım ? alpha(col, 0.11) : THEME.panelBgStrong }}>
+                  <input type="checkbox" checked={autoSarkım}
+                    onChange={e => setAutoSarkım(e.target.checked)}
+                    style={{ width:13, height:13, cursor:"pointer", accentColor:col }}
+                    disabled={bulkLoad} />
+                  <span style={{ fontSize:11.5, fontWeight: autoSarkım ? 800 : 500, color: autoSarkım ? col : THEME.textMuted }}>
+                    Sarkım
+                  </span>
+                  {autoSarkım && oh > 0 && <span style={{ fontSize:11, color:col, fontWeight:900 }}>({oh}cm)</span>}
+                </label>
+                <div style={{ display:"flex", gap:4, opacity: (autoSarkım && !bulkLoad) ? 1 : 0.35, pointerEvents: (autoSarkım && !bulkLoad) ? "auto" : "none" }}>
+                  {[0, 5, 15].map(v => {
+                    const on = manualOh === v;
+                    return (
+                      <button key={v} onClick={() => setManualOh(v)} style={{
+                        padding:"6px 12px", borderRadius:8, cursor:"pointer", fontSize:11.5,
+                        border:`1.5px solid ${on ? col : THEME.border}`,
+                        background: on ? alpha(col, 0.11) : THEME.panelBgStrong,
+                        color: on ? col : THEME.textMuted, fontWeight: on ? 800 : 500 }}>
+                        {v === 0 ? "Yok" : `${v}cm`}
+                      </button>
+                    );
+                  })}
+                </div>
+                <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer",
+                  userSelect:"none", padding:"6px 10px", borderRadius:8,
+                  border:`1px solid ${partialSarkim ? col : THEME.border}`,
+                  background: partialSarkim ? alpha(col, 0.11) : THEME.panelBgStrong,
+                  opacity: (autoSarkım && !bulkLoad && manualOh === 15) ? 1 : 0.45,
+                  pointerEvents: (autoSarkım && !bulkLoad && manualOh === 15) ? "auto" : "none" }}>
+                  <input type="checkbox" checked={partialSarkim} onChange={e => setPartialSarkim(e.target.checked)}
+                    style={{ width:13, height:13, cursor:"pointer", accentColor:col }} />
+                  <span style={{ fontSize:11.5, color: partialSarkim ? col : THEME.textMuted, fontWeight: partialSarkim ? 800 : 500 }}>
+                    Parçalı Sarkım
+                  </span>
+                </label>
+                <div style={{ display:"flex", gap:6, opacity: (autoSarkım && partialSarkim && !bulkLoad && manualOh === 15) ? 1 : 0.45, pointerEvents: (autoSarkım && partialSarkim && !bulkLoad && manualOh === 15) ? "auto" : "none" }}>
+                  <button onClick={() => setPartialSarkimMode("fixed10")} style={{
+                    ...SEL, width:"auto", padding:"6px 10px", fontSize:11.5,
+                    border:`1px solid ${partialSarkimMode === "fixed10" ? col : THEME.border}`,
+                    background: partialSarkimMode === "fixed10" ? alpha(col, 0.13) : THEME.panelBgStrong,
+                    color: partialSarkimMode === "fixed10" ? col : THEME.textMuted
+                  }}>
+                    Fix 10cm
+                  </button>
+                  <button onClick={() => setPartialSarkimMode("overflow")} style={{
+                    ...SEL, width:"auto", padding:"6px 10px", fontSize:11.5,
+                    border:`1px solid ${partialSarkimMode === "overflow" ? col : THEME.border}`,
+                    background: partialSarkimMode === "overflow" ? alpha(col, 0.13) : THEME.panelBgStrong,
+                    color: partialSarkimMode === "overflow" ? col : THEME.textMuted
+                  }}>
+                    Taşma Kadar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <LayerEditor
-            baseLayers={layers}
-            effectiveLayers={effectiveLayers}
+            baseLayers={bulkLoad ? bulkBaseLayers : layers}
+            effectiveLayers={bulkLoad ? bulkLayers : effectiveLayers}
             setLayerAdjust={setLayerAdjust}
             extraBoxInput={extraBoxInput}
             setExtraBoxInput={setExtraBoxInput}
@@ -1839,18 +2201,28 @@ export default function App() {
                   <div style={{ display:"flex", flexDirection:"column", gap:6, flex:1 }}>
                     {["A","B","C"].map(v => {
                       const on = orient === v;
+                      const orientBest = orientGlobalBest[v];
                       return (
-                        <button key={v} onClick={() => setOrient(v)} style={{
-                          width:"100%", padding:"8px 10px", borderRadius:8, cursor:"pointer",
-                          fontSize:12, border:`1.5px solid ${on ? col : THEME.border}`,
-                          background: on ? alpha(col, 0.15) : THEME.panelBgStrong,
-                          color: on ? col : THEME.textMuted,
-                          fontWeight: on ? 900 : 500, transition:"all 0.18s",
-                          textAlign:"left", display:"flex", alignItems:"center", gap:8,
-                        }}>
-                          <span style={{ fontWeight:900, fontSize:15, minWidth:16 }}>{v}</span>
-                          <span style={{ fontSize:11, opacity:0.9 }}>{orientFaces[v]}</span>
-                        </button>
+                        <div key={v} style={{ width:"100%" }}>
+                          <button onClick={() => setOrient(v)} style={{
+                            width:"100%", padding:"8px 10px", borderRadius:8, cursor:"pointer",
+                            fontSize:12, border:`1.5px solid ${on ? col : THEME.border}`,
+                            background: on ? alpha(col, 0.15) : THEME.panelBgStrong,
+                            color: on ? col : THEME.textMuted,
+                            fontWeight: on ? 900 : 500, transition:"all 0.18s",
+                            textAlign:"left", display:"flex", alignItems:"center", gap:8,
+                          }}>
+                            <span style={{ fontWeight:900, fontSize:15, minWidth:16 }}>{v}</span>
+                            <span style={{ fontSize:11, opacity:0.9 }}>{orientFaces[v]}</span>
+                          </button>
+                          <div style={{ marginTop:4, fontSize:10.5, color:THEME.textSubtle, lineHeight:1.35 }}>
+                            {orientBest
+                              ? orientBest.mode === "bulk"
+                                ? `${orientBest.count} kutu/yerleşim · ${orientBest.truckPallets} yerleşim/tır · ${orientBest.truckBoxes} kutu/tır · Dökme`
+                                : `${orientBest.count} kutu/palet · ${orientBest.truckPallets} palet/tır · ${orientBest.truckBoxes} kutu/tır · ${orientBest.pallet} · ${orientBest.oh === 0 ? "Sarkım yok" : `${orientBest.oh}cm`}`
+                              : "Bu yön için limitlere uygun kombinasyon yok"}
+                          </div>
+                        </div>
                       );
                     })}
                   </div>
@@ -1862,21 +2234,40 @@ export default function App() {
 
         <div style={{ ...card, padding:"20px 22px" }}>
           <span style={{ ...SL, fontSize:13, marginBottom:13 }}>📊 Yük Analizi</span>
-          <Gauge lbl="Yükleme Yüksekliği" val={stkH} max={liveMaxH}  unit="cm" theme={THEME} />
-          <Gauge lbl="Palet Ağırlığı" val={pKg}  max={liveMaxKg} unit="kg" theme={THEME} />
+          <Gauge
+            lbl={bulkLoad ? "Tır Yükleme Yüksekliği" : "Yükleme Yüksekliği"}
+            val={heightGaugeVal}
+            max={heightGaugeMax}
+            unit="cm"
+            theme={THEME}
+          />
+          <Gauge
+            lbl={bulkLoad ? "Tır Toplam Ağırlık" : "Palet Ağırlığı"}
+            val={weightGaugeVal}
+            max={weightGaugeMax}
+            unit="kg"
+            theme={THEME}
+          />
           <div style={{ borderTop:`1px solid ${THEME.borderSoft}`, margin:"12px 0 9px" }} />
           <StatRow k="Ürün (SKU)"        v={sku.sku} vc={col} theme={THEME} />
-          <StatRow k="Palet Tipi" v={pal.label} theme={THEME} />
-          <StatRow k="Kat Başına Kutu" v={`${cols}×${rows} = ${cols*rows}`} theme={THEME} />
-          <StatRow k="Toplam Kat" v={visualLayers} theme={THEME} />
-          <StatRow k="Palet Başına (aktif)" v={`${ipp} adet`} theme={THEME} />
-          <StatRow k="Tırdaki Palet" v={`${nPal} adet`} theme={THEME} />
+          <StatRow k="Yükleme Modu" v={bulkLoad ? "Dökme (kutu bazlı)" : "Paletli"} theme={THEME} />
+          {!bulkLoad && <StatRow k="Palet Tipi" v={pal.label} theme={THEME} />}
+          <StatRow
+            k="Kat Başına Kutu"
+            v={bulkLoad ? `${nPal} kutu/layer` : `${cols}×${rows} = ${cols*rows}`}
+            theme={THEME}
+          />
+          <StatRow k="Toplam Kat" v={bulkLoad ? bulkLayers : visualLayers} theme={THEME} />
+          <StatRow k={bulkLoad ? "Yerleşim Başına (aktif)" : "Palet Başına (aktif)"} v={`${placementUnits} adet`} theme={THEME} />
+          <StatRow k={bulkLoad ? "Tırdaki Yerleşim" : "Tırdaki Palet"} v={`${nPal} adet`} theme={THEME} />
           <StatRow k="Toplam Kutu"       v={nItm.toLocaleString()} theme={THEME} />
           <StatRow k="Toplam Yük"        v={`${nTon.toFixed(2)} ton`} theme={THEME} />
           <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:12 }}>
-            <Badge ok={stkH <= liveMaxH} lbl="YÜKSEKLİK" />
-            <Badge ok={pKg <= liveMaxKg} lbl="AĞIRLIK" />
-            <Badge ok={cols > 0 && rows > 0 && layers > 0} lbl="SIĞIYOR" />
+            <Badge ok={heightGaugeVal <= heightGaugeMax} lbl="YÜKSEKLİK" />
+            <Badge ok={bulkLoad ? (stackHeight <= bulkProductHeightLimit) : (stkH <= liveTruckH)} lbl="TIR YÜKSEKLİK" />
+            <Badge ok={weightGaugeVal <= weightGaugeMax} lbl="AĞIRLIK" />
+            <Badge ok={totalKg <= truckTonKg} lbl="TIR TONAJI" />
+            <Badge ok={bulkLoad ? (nPal > 0 && bulkLayers > 0) : (cols > 0 && rows > 0 && layers > 0)} lbl="SIĞIYOR" />
             <Badge ok={layoutState.valid} lbl="TIR YERLEŞİMİ" />
             <Badge ok={!!bestOption?.bestFit} lbl="OPTIMAL LIMIT" />
           </div>
@@ -1892,6 +2283,34 @@ export default function App() {
               v={unitFiyat > 0 ? `₺${unitFiyat.toLocaleString("tr-TR")}` : "—"}
               theme={THEME}
             />
+            {skuFiyat <= 0 && (
+              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 0",
+                borderBottom:`1px solid ${THEME.borderSoft}`, flexWrap:"wrap" }}>
+                <span style={{ fontSize:12.5, color:THEME.textMuted }}>Manuel fiyat</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={manualPriceInput}
+                  onChange={(e) => setManualPriceInput(e.target.value)}
+                  placeholder="Fiyat"
+                  style={{ flex:"1 1 90px", minWidth:70, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"7px 9px", fontSize:13 }}
+                />
+                <select
+                  value={manualPriceCurrency}
+                  onChange={(e) => setManualPriceCurrency(e.target.value)}
+                  style={{ ...SEL, width:"auto", padding:"7px 8px", fontSize:12.5 }}
+                >
+                  <option value="TL">TL</option>
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                </select>
+                {(manualPriceCurrency !== "TL") && (
+                  <span style={{ fontSize:10.5, color:THEME.textSubtle }}>
+                    Döviz fiyatı için kur alanına TL karşılığını girin.
+                  </span>
+                )}
+              </div>
+            )}
             <div style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0",
               borderBottom:`1px solid ${THEME.borderSoft}`, flexWrap:"wrap" }}>
               <label style={{ display:"flex", alignItems:"center", gap:5, cursor:"pointer",
@@ -1926,7 +2345,7 @@ export default function App() {
               )}
             </div>
             <StatRow
-              k="Palet Maliyeti"
+              k={bulkLoad ? "Yerleşim Maliyeti" : "Palet Maliyeti"}
               v={unitFiyat > 0
                 ? `${currencySymbol}${paletMaliyeti.toLocaleString("tr-TR", {maximumFractionDigits:2})}`
                 : "—"}
@@ -1951,11 +2370,20 @@ export default function App() {
           marginBottom:10, flexWrap:"wrap", gap:6 }}>
           <span style={{ ...SL, marginBottom:0, fontSize:13 }}>🗺️ Tır Yükleme Haritası · Çoklu Seçim + Sürükle-Bırak</span>
           <span style={{ fontSize:13, color:THEME.textMuted }}>
-            <b style={{ color:THEME.textPrimary }}>{nPal}</b> palet · Seçili: <b style={{ color:"#FCD34D" }}>{selectedPlacementIds.length}</b> · Ctrl/Shift ile çoklu seçim
+            <b style={{ color:THEME.textPrimary }}>{nPal}</b> {bulkLoad ? "yerleşim" : "palet"} · Seçili: <b style={{ color:"#FCD34D" }}>{selectedPlacementIds.length}</b> · Ctrl/Shift ile çoklu seçim
           </span>
         </div>
         <div style={{ fontSize:13, color:THEME.textMuted, marginBottom:8 }}>
           Tır Ölçüleri:
+          <label style={{ display:"inline-flex", alignItems:"center", gap:5, marginLeft:8, fontSize:12, color:THEME.textSecondary, cursor:"pointer" }}>
+            <input
+              type="checkbox"
+              checked={useDefaultTruckDims}
+              onChange={(e) => setUseDefaultTruckDims(e.target.checked)}
+              style={{ accentColor: col }}
+            />
+            Default
+          </label>
           <span style={{ display:"inline-flex", alignItems:"center", gap:6, marginLeft:6, flexWrap:"wrap" }}>
             <input
               type="text"
@@ -1964,6 +2392,7 @@ export default function App() {
               onChange={(e) => setTruckLInput(e.target.value)}
               onBlur={commitTruckL}
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              disabled={useDefaultTruckDims}
               style={{ width:66, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"4px 6px", fontSize:12 }}
               title="Tır uzunluğu (cm)"
             />
@@ -1975,6 +2404,7 @@ export default function App() {
               onChange={(e) => setTruckWInput(e.target.value)}
               onBlur={commitTruckW}
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              disabled={useDefaultTruckDims}
               style={{ width:66, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"4px 6px", fontSize:12 }}
               title="Tır genişliği (cm)"
             />
@@ -1982,32 +2412,60 @@ export default function App() {
             <input
               type="text"
               inputMode="decimal"
-              value={maxHInput}
-              onChange={(e) => setMaxHInput(e.target.value)}
-              onBlur={commitMaxH}
+              value={truckHeightInput}
+              onChange={(e) => setTruckHeightInput(e.target.value)}
+              onBlur={commitTruckHeight}
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              disabled={useDefaultTruckDims}
               style={{ width:66, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"4px 6px", fontSize:12 }}
               title="Tır yükseklik limiti (cm)"
             />
             <b style={{ color:THEME.textSecondary }}>cm</b>
+            ·
+            <input
+              type="text"
+              inputMode="decimal"
+              value={truckTonInput}
+              onChange={(e) => setTruckTonInput(e.target.value)}
+              onBlur={commitTruckTon}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              disabled={useDefaultTruckDims}
+              style={{ width:66, background:THEME.panelBgStrong, color:THEME.textPrimary, border:`1px solid ${THEME.border}`, borderRadius:7, padding:"4px 6px", fontSize:12 }}
+              title="Tır tonaj limiti (ton)"
+            />
+            <b style={{ color:THEME.textSecondary }}>ton</b>
           </span>
         </div>
-        <div style={{ background:THEME.panelBg, borderRadius:9, padding:"12px 10px" }}>
-          <TruckMap
-            placements={placements}
-            setPlacements={setPlacements}
-            selectedIds={selectedPlacementIds}
-            setSelectedIds={setSelectedPlacementIds}
-            col={col}
-            fpA={fpA}
-            fpB={fpB}
-            theme={THEME}
-            truckL={truckL}
-            truckW={truckW}
-          />
+        <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) 240px", gap:10, alignItems:"stretch" }}>
+          <div style={{ background:THEME.panelBg, borderRadius:9, padding:"12px 10px" }}>
+            <TruckMap
+              placements={placements}
+              setPlacements={setPlacements}
+              selectedIds={selectedPlacementIds}
+              setSelectedIds={setSelectedPlacementIds}
+              col={col}
+              fpA={fpA}
+              fpB={fpB}
+              theme={THEME}
+              truckL={truckL}
+              truckW={truckW}
+              showPackageOverlay={!bulkLoad}
+              bulkMode={bulkLoad}
+            />
+          </div>
+          <div style={{ ...card, padding:"12px 12px", margin:0 }}>
+            <span style={{ ...SL, marginBottom:8, fontSize:11 }}>Doluluk Metrikleri</span>
+            <StatRow k="Total m²" v={totalM2.toFixed(2)} theme={THEME} />
+            <StatRow k="Dolu m²" v={doluM2.toFixed(2)} vc="#86EFAC" theme={THEME} />
+            <StatRow k="Boş m²" v={bosM2.toFixed(2)} vc="#FCA5A5" theme={THEME} />
+            <div style={{ borderTop:`1px solid ${THEME.borderSoft}`, margin:"8px 0" }} />
+            <StatRow k="Total m³" v={totalM3.toFixed(2)} theme={THEME} />
+            <StatRow k="Dolu m³" v={doluM3.toFixed(2)} vc="#86EFAC" theme={THEME} />
+            <StatRow k="Boş m³" v={bosM3.toFixed(2)} vc="#FCA5A5" theme={THEME} />
+          </div>
         </div>
         <div style={{ display:"flex", gap:8, marginTop:12, flexWrap:"wrap" }}>
-          <button onClick={() => addPalletToTruck(false)} style={{ ...SEL, width:"auto", padding:"9px 11px", fontWeight:700 }}>+ Palet</button>
+          <button onClick={() => addPalletToTruck(false)} style={{ ...SEL, width:"auto", padding:"9px 11px", fontWeight:700 }}>+ {bulkLoad ? "Kutu" : "Palet"}</button>
           <button onClick={() => addPalletToTruck(true)} style={{ ...SEL, width:"auto", padding:"9px 11px", fontWeight:700 }}>+ Döndürülmüş</button>
           <button onClick={rotateSelected} style={{ ...SEL, width:"auto", padding:"9px 11px", color:"#FDE68A", fontWeight:700 }}>Seçiliyi Döndür</button>
           <button onClick={removeSelectedPallet} style={{ ...SEL, width:"auto", padding:"9px 11px", color:"#FCA5A5", fontWeight:700 }}>Seçiliyi Sil</button>
@@ -2015,27 +2473,27 @@ export default function App() {
         </div>
         <div style={{ display:"flex", gap:16, marginTop:10, fontSize:12, flexWrap:"wrap" }}>
           <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-            <div style={{ width:12, height:12, borderRadius:2, background:"#7B5B1C", border:"0.5px solid #3D2D0E" }} />
+            <div style={{ width:12, height:12, borderRadius:2, background:bulkLoad ? alpha(col, 0.58) : "#7B5B1C", border:bulkLoad ? `0.5px solid ${shade(col, 0.6)}` : "0.5px solid #3D2D0E" }} />
             <span style={{ color:THEME.textSecondary }}>
-              Palet {oh > 0 ? `(Eff. ${effPalA}×${effPalB}cm)` : `(${pal.a}×${pal.b}cm)`} · {nPal} adet
+              {bulkLoad ? `Kutu tabanı (${bL}×${bW}cm)` : `Palet ${oh > 0 ? `(Eff. ${effPalA}×${effPalB}cm)` : `(${pal.a}×${pal.b}cm)`}`} · {nPal} adet
             </span>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          {!bulkLoad && <div style={{ display:"flex", alignItems:"center", gap:5 }}>
             <div style={{ width:12, height:12, borderRadius:2, background:alpha(col, 0.74) }} />
             <span style={{ color:THEME.textSecondary }}>Paket Tabanı ({fpA}×{fpB}cm)</span>
-          </div>
+          </div>}
           <div style={{ display:"flex", alignItems:"center", gap:5 }}>
             <div style={{ width:12, height:12, borderRadius:2, background:"rgba(239,68,68,0.4)" }} />
             <span style={{ color:THEME.textSecondary }}>Boş Alan</span>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          {!bulkLoad && <div style={{ display:"flex", alignItems:"center", gap:5 }}>
             <div style={{ width:12, height:12, borderRadius:2, background:"rgba(245,158,11,0.55)", border:"0.5px dashed #F59E0B" }} />
             <span style={{ color:THEME.textSecondary }}>Paletten taşan paket</span>
-          </div>
-          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          </div>}
+          {!bulkLoad && <div style={{ display:"flex", alignItems:"center", gap:5 }}>
             <div style={{ width:12, height:12, borderRadius:2, background:"rgba(239,68,68,0.58)", border:"0.5px dashed #F87171" }} />
             <span style={{ color:THEME.textSecondary }}>Tır dışı paket taşması</span>
-          </div>
+          </div>}
         </div>
       </div>
 
