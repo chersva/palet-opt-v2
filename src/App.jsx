@@ -505,30 +505,32 @@ function packPallet(bL, bW, bH, pA, pB, oh, maxProductH, maxKg, itemKg, palletBa
   };
 
   const partial15 = partialSarkim && oh === 15;
-  const oneWay15 = partial15 && partialSarkimMode === "fixed10OneWay";
+  const globalMaxA = partial15 ? (pA + 20) : (pA + maxAxisExtra);
+  const globalMaxB = partial15 ? (pB + 20) : (pB + maxAxisExtra);
   const candidates = [];
-  if (oneWay15) {
-    // Tek yon: +20 yalnizca bir eksende olabilecegi icin iki olasiligi da deneriz.
-    candidates.push(
-      evalPack(Math.floor((pA + 20) / bL), Math.floor(pB / bW), bL, bW),
-      evalPack(Math.floor(pA / bL), Math.floor((pB + 20) / bW), bL, bW),
-      evalPack(Math.floor((pA + 20) / bW), Math.floor(pB / bL), bW, bL),
-      evalPack(Math.floor(pA / bW), Math.floor((pB + 20) / bL), bW, bL),
-      // No-overflow ihtimali de degerlendirilsin.
-      evalPack(Math.floor(pA / bL), Math.floor(pB / bW), bL, bW),
-      evalPack(Math.floor(pA / bW), Math.floor(pB / bL), bW, bL)
-    );
-  } else {
-    const globalMaxA = partial15 ? (pA + 20) : (pA + maxAxisExtra);
-    const globalMaxB = partial15 ? (pB + 20) : (pB + maxAxisExtra);
-    const [c1, r1] = [Math.floor(globalMaxA / bL), Math.floor(globalMaxB / bW)];
-    const [c2, r2] = [Math.floor(globalMaxA / bW), Math.floor(globalMaxB / bL)];
-    candidates.push(
-      evalPack(Math.max(0, c1), Math.max(0, r1), bL, bW),
-      evalPack(Math.max(0, c2), Math.max(0, r2), bW, bL)
-    );
-  }
-  const best = candidates.reduce((acc, cur) => (cur.score > acc.score ? cur : acc), candidates[0]);
+  const scanOrientation = (boxL, boxW) => {
+    const maxCols = Math.max(0, Math.floor(globalMaxA / boxL));
+    const maxRows = Math.max(0, Math.floor(globalMaxB / boxW));
+    for (let cols = 0; cols <= maxCols; cols++) {
+      for (let rows = 0; rows <= maxRows; rows++) {
+        candidates.push(evalPack(cols, rows, boxL, boxW));
+      }
+    }
+  };
+  // 5cm sarkim "opsiyonel" oldugu icin, sadece max dolu degil tum anlamli cols/rows kombinasyonlarini deneriz.
+  scanOrientation(bL, bW);
+  scanOrientation(bW, bL);
+  const best = candidates.reduce((acc, cur) => {
+    if (cur.score > acc.score) return cur;
+    if (cur.score < acc.score) return acc;
+    const accArea = (acc.effA || 0) * (acc.effB || 0);
+    const curArea = (cur.effA || 0) * (cur.effB || 0);
+    if (curArea < accArea) return cur;
+    if (curArea > accArea) return acc;
+    const accPerLayer = (acc.cols || 0) * (acc.rows || 0);
+    const curPerLayer = (cur.cols || 0) * (cur.rows || 0);
+    return curPerLayer < accPerLayer ? cur : acc;
+  }, candidates[0] || evalPack(0, 0, bL, bW));
   return {
     cols: best.cols,
     rows: best.rows,
