@@ -446,30 +446,47 @@ function packPallet(bL, bW, bH, pA, pB, oh, maxProductH, maxKg, itemKg, palletBa
     const perLayer = Math.max(0, cols * rows);
     const usedA = cols * boxL;
     const usedB = rows * boxW;
+    const overflowA = Math.max(0, usedA - pA);
+    const overflowB = Math.max(0, usedB - pB);
 
     const partialEnabled = partialSarkim && oh === 15;
     const partial15 = partialEnabled && oh === 15;
-    const axisBase = (p, used) => {
+    const useFixed10OneWay = partialSarkimMode === "fixed10OneWay";
+    const oneWayAxis =
+      useFixed10OneWay && (overflowA > 0 || overflowB > 0)
+        ? (overflowA >= overflowB ? "A" : "B")
+        : null;
+    const boardAddForAxis = (axis, overflow) => {
+      // Fix 10cm: her iki eksende de +20 zorunlu (10+10).
+      if (partialSarkimMode === "fixed10") return 20;
+      // Tek yön: yalnızca seçilen eksende +20 zorunlu.
+      if (partialSarkimMode === "fixed10OneWay") {
+        const chosenAxis = oneWayAxis || "A";
+        return chosenAxis === axis ? 20 : 0;
+      }
+      if (overflow <= 0) return 0;
+      return Math.min(20, overflow);
+    };
+    const axisBase = (axis, p, used) => {
       if (!partialEnabled) return p + baseAxisExtra;
       if (!partial15) return p;
       const overflow = Math.max(0, used - p);
-      if (overflow <= 0) return p;
-      const boardAdd = partialSarkimMode === "fixed10" ? 20 : Math.min(20, overflow);
+      const boardAdd = boardAddForAxis(axis, overflow);
       return p + boardAdd;
     };
-    const axisMax = (p, used) => {
+    const axisMax = (axis, p, used) => {
       if (!partialEnabled) return p + maxAxisExtra;
       if (!partial15) return p + 10;
       const overflow = Math.max(0, used - p);
       if (overflow <= 0) return p;
       // Parcali 15 mode: total extension on a needed axis is capped to +20 (10+10).
-      const boardAdd = partialSarkimMode === "fixed10" ? 20 : Math.min(20, overflow);
+      const boardAdd = boardAddForAxis(axis, overflow);
       return p + boardAdd;
     };
-    const minA = axisBase(pA, usedA);
-    const minB = axisBase(pB, usedB);
-    const maxA = axisMax(pA, usedA);
-    const maxB = axisMax(pB, usedB);
+    const minA = axisBase("A", pA, usedA);
+    const minB = axisBase("B", pB, usedB);
+    const maxA = axisMax("A", pA, usedA);
+    const maxB = axisMax("B", pB, usedB);
 
     if (usedA > maxA || usedB > maxB) {
       return { cols, rows, layers: 0, boxL, boxW, effA: minA, effB: minB, score: 0 };
@@ -488,13 +505,30 @@ function packPallet(bL, bW, bH, pA, pB, oh, maxProductH, maxKg, itemKg, palletBa
   };
 
   const partial15 = partialSarkim && oh === 15;
-  const globalMaxA = partial15 ? (pA + 20) : (pA + maxAxisExtra);
-  const globalMaxB = partial15 ? (pB + 20) : (pB + maxAxisExtra);
-  const [c1, r1] = [Math.floor(globalMaxA / bL), Math.floor(globalMaxB / bW)];
-  const [c2, r2] = [Math.floor(globalMaxA / bW), Math.floor(globalMaxB / bL)];
-  const a = evalPack(Math.max(0, c1), Math.max(0, r1), bL, bW);
-  const b = evalPack(Math.max(0, c2), Math.max(0, r2), bW, bL);
-  const best = b.score > a.score ? b : a;
+  const oneWay15 = partial15 && partialSarkimMode === "fixed10OneWay";
+  const candidates = [];
+  if (oneWay15) {
+    // Tek yon: +20 yalnizca bir eksende olabilecegi icin iki olasiligi da deneriz.
+    candidates.push(
+      evalPack(Math.floor((pA + 20) / bL), Math.floor(pB / bW), bL, bW),
+      evalPack(Math.floor(pA / bL), Math.floor((pB + 20) / bW), bL, bW),
+      evalPack(Math.floor((pA + 20) / bW), Math.floor(pB / bL), bW, bL),
+      evalPack(Math.floor(pA / bW), Math.floor((pB + 20) / bL), bW, bL),
+      // No-overflow ihtimali de degerlendirilsin.
+      evalPack(Math.floor(pA / bL), Math.floor(pB / bW), bL, bW),
+      evalPack(Math.floor(pA / bW), Math.floor(pB / bL), bW, bL)
+    );
+  } else {
+    const globalMaxA = partial15 ? (pA + 20) : (pA + maxAxisExtra);
+    const globalMaxB = partial15 ? (pB + 20) : (pB + maxAxisExtra);
+    const [c1, r1] = [Math.floor(globalMaxA / bL), Math.floor(globalMaxB / bW)];
+    const [c2, r2] = [Math.floor(globalMaxA / bW), Math.floor(globalMaxB / bL)];
+    candidates.push(
+      evalPack(Math.max(0, c1), Math.max(0, r1), bL, bW),
+      evalPack(Math.max(0, c2), Math.max(0, r2), bW, bL)
+    );
+  }
+  const best = candidates.reduce((acc, cur) => (cur.score > acc.score ? cur : acc), candidates[0]);
   return {
     cols: best.cols,
     rows: best.rows,
@@ -565,6 +599,7 @@ function formatSarkimExport(oh, partialSarkim, partialSarkimMode) {
   if (oh === 5) return "+5 cm (opsiyonel taşma)";
   if (oh === 15) {
     if (partialSarkim) {
+      if (partialSarkimMode === "fixed10OneWay") return "15 cm · Parçalı · Fix 10 cm (tek yön)";
       return partialSarkimMode === "fixed10"
         ? "15 cm · Parçalı · Fix 10 cm"
         : "15 cm · Parçalı · Taşma kadar";
@@ -1611,8 +1646,9 @@ export default function App() {
   const [useDefaultLimits, setUseDefaultLimits] = useState(true);
   const [bulkLoad, setBulkLoad] = useState(false);
   const [autoSarkım, setAutoSarkım] = useState(true);
-  const [partialSarkim, setPartialSarkim] = useState(true);
+  const partialSarkim = true;
   const [partialSarkimMode, setPartialSarkimMode] = useState("overflow");
+  const [forceOverflowFor15, setForceOverflowFor15] = useState(true);
   const [manualOh,   setManualOh]   = useState(0);
   const [maxH, setMaxH] = useState(DEFAULT_MAX_H);
   const [maxKg, setMaxKg] = useState(DEFAULT_MAX_KG);
@@ -1742,6 +1778,7 @@ export default function App() {
   const bulkProductHeightLimit = Math.max(0, liveTruckH - 30);
   const truckBasedPalletProductLimit = Math.max(0, liveTruckH - livePalletBaseH);
   const effectivePalletProductLimit = Math.min(livePalletMaxH, truckBasedPalletProductLimit);
+  const optimalPartialSarkimMode = "overflow";
   useEffect(() => {
     if (!useDefaultLimits) return;
     setMaxH(DEFAULT_MAX_H);
@@ -1762,6 +1799,11 @@ export default function App() {
     setTruckHeightInput(String(DEFAULT_TRUCK_H));
     setTruckTonInput("22");
   }, [useDefaultTruckDims]);
+  useEffect(() => {
+    if (forceOverflowFor15 && partialSarkimMode !== "overflow") {
+      setPartialSarkimMode("overflow");
+    }
+  }, [forceOverflowFor15, partialSarkimMode]);
 
   // bestOption computed first (no dependency on oh) so autoSarkım can derive oh from it
   const bestOption = useMemo(() => {
@@ -1804,7 +1846,7 @@ export default function App() {
         for (const ohOpt of ohOptions) {
           for (const ort of orientOptions) {
             const { bH: tH, bW: tW, bL: tL } = flatOrient(sku?.en || 0, sku?.boy || 0, sku?.yuk || 0, ort);
-            const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
+            const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, optimalPartialSarkimMode);
             const truckPallets = packTruck(packed.effA, packed.effB, liveTruckL, liveTruckW).length;
             const perLayerCount = packed.cols * packed.rows;
             if (perLayerCount <= 0) continue;
@@ -1834,6 +1876,8 @@ export default function App() {
               layers: candidateLayers,
               cols: packed.cols,
               rows: packed.rows,
+              effA: packed.effA,
+              effB: packed.effB,
               oh: ohOpt,
               orient: ort,
               fits,
@@ -1844,8 +1888,11 @@ export default function App() {
             if (!bestAny || candidate.truckBoxes > bestAny.truckBoxes) bestAny = candidate;
             if (!candidate.fits) continue;
             if (!bestFit) { bestFit = candidate; continue; }
-            const bestScore = [bestFit.truckBoxes, bestFit.count, -bestFit.h, -bestFit.kg];
-            const nextScore = [candidate.truckBoxes, candidate.count, -candidate.h, -candidate.kg];
+            const bestFootprint = (bestFit.effA || 0) * (bestFit.effB || 0);
+            const nextFootprint = (candidate.effA || 0) * (candidate.effB || 0);
+            // Tie-break: same kutu kapasitesinde daha az sunta alanını tercih et.
+            const bestScore = [bestFit.truckBoxes, bestFit.count, -bestFootprint, -bestFit.h, -bestFit.kg];
+            const nextScore = [candidate.truckBoxes, candidate.count, -nextFootprint, -candidate.h, -candidate.kg];
             for (let i = 0; i < nextScore.length; i++) {
               if (nextScore[i] > bestScore[i]) { bestFit = candidate; break; }
               if (nextScore[i] < bestScore[i]) break;
@@ -1855,7 +1902,7 @@ export default function App() {
       }
     }
     return { bestFit, bestAny };
-  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
+  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, optimalPartialSarkimMode]);
 
   const orientGlobalBest = useMemo(() => {
     const out = {};
@@ -1884,7 +1931,7 @@ export default function App() {
         const ohOptions = autoSarkım ? [0, 5, 15] : [0];
         for (const p of allPallets) {
           for (const ohOpt of ohOptions) {
-            const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, partialSarkimMode);
+            const packed = packPallet(tL, tW, tH, p.a, p.b, ohOpt, effectivePalletProductLimit, livePalletMaxKg, sku?.kg || 0, livePalletBaseH, partialSarkim, optimalPartialSarkimMode);
             const truckPallets = packTruck(packed.effA, packed.effB, liveTruckL, liveTruckW).length;
             const perLayerCount = packed.cols * packed.rows;
             if (perLayerCount <= 0) continue;
@@ -1913,16 +1960,31 @@ export default function App() {
               count,
               truckPallets,
               truckBoxes: truckPallets * count,
+              effA: packed.effA,
+              effB: packed.effB,
+              h: candidateProductH,
+              kg: candidateKg,
               truckKg: candidateTruckKg,
             };
-            if (!best || candidate.truckBoxes > best.truckBoxes) best = candidate;
+            if (!best) {
+              best = candidate;
+              continue;
+            }
+            const bestFootprint = (best.effA || 0) * (best.effB || 0);
+            const nextFootprint = (candidate.effA || 0) * (candidate.effB || 0);
+            const bestScore = [best.truckBoxes, best.count, -bestFootprint, -best.h, -best.kg];
+            const nextScore = [candidate.truckBoxes, candidate.count, -nextFootprint, -candidate.h, -candidate.kg];
+            for (let i = 0; i < nextScore.length; i++) {
+              if (nextScore[i] > bestScore[i]) { best = candidate; break; }
+              if (nextScore[i] < bestScore[i]) break;
+            }
           }
         }
       }
       out[ort] = best;
     }
     return out;
-  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, partialSarkimMode]);
+  }, [allPallets, sku?.en, sku?.boy, sku?.yuk, sku?.kg, effectivePalletProductLimit, livePalletMaxKg, autoSarkım, liveTruckL, liveTruckW, livePalletBaseH, liveTruckH, truckTonKg, bulkLoad, bulkProductHeightLimit, partialSarkim, optimalPartialSarkimMode]);
 
   const oh = autoSarkım ? manualOh : 0;
 
@@ -2183,7 +2245,7 @@ export default function App() {
         [`Tır tonaj (ton)`, liveTruckTon],
         [`Palet limit`, `Ürün max ${livePalletMaxH} cm · max ${livePalletMaxKg} kg · taban ${livePalletBaseH} cm`],
         [`Otomatik sarkım seçenekleri`, autoSarkım ? "0 / 5 / 15 cm" : "Kapalı (yalnız 0 cm)"],
-        [`Parçalı sarkım (15 cm)`, `${partialSarkim ? `Açık (${partialSarkimMode})` : "Kapalı"}`],
+        [`Parçalı sarkım modu (15 cm)`, partialSarkimMode],
         [`Maliyet para birimi`, exportCostCurrency],
         ...(useKur && Number.isFinite(kurVal) && kurVal > 0
           ? [[`Güncel kur (1 ${kurType} = … TL)`, `${kurVal} TL`]]
@@ -2660,7 +2722,7 @@ export default function App() {
           <span style={{ fontSize:11.5, color:"#86EFAC", fontWeight:700 }}>
             {bestOption.bestFit.mode === "bulk"
               ? `En Optimal (Limitlere Uygun): Dökme · Yön ${bestOption.bestFit.orient} · ${bestOption.bestFit.count} kutu/yerleşim · Tırda ${bestOption.bestFit.truckPallets} yerleşim (${bestOption.bestFit.truckBoxes} kutu)`
-              : `En Optimal (Limitlere Uygun): ${bestOption.bestFit.pallet} · Yön ${bestOption.bestFit.orient} · Sarkim ${bestOption.bestFit.oh === 0 ? "Yok" : `+${bestOption.bestFit.oh}cm`} · ${bestOption.bestFit.cols}x${bestOption.bestFit.rows}x${bestOption.bestFit.layers} = ${bestOption.bestFit.count} kutu/palet · Tirda ${bestOption.bestFit.truckPallets} palet (${bestOption.bestFit.truckBoxes} kutu)`}
+              : `En Optimal (Limitlere Uygun): ${bestOption.bestFit.pallet} · Yön ${bestOption.bestFit.orient} · ${formatSarkimExport(bestOption.bestFit.oh, partialSarkim, optimalPartialSarkimMode)} · ${bestOption.bestFit.cols}x${bestOption.bestFit.rows}x${bestOption.bestFit.layers} = ${bestOption.bestFit.count} kutu/palet · Tirda ${bestOption.bestFit.truckPallets} palet (${bestOption.bestFit.truckBoxes} kutu)`}
           </span>
         ) : (
           <span style={{ fontSize:11.5, color:"#FCA5A5", fontWeight:700 }}>
@@ -2761,26 +2823,32 @@ export default function App() {
                     );
                   })}
                 </div>
-                <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer",
-                  userSelect:"none", padding:"6px 10px", borderRadius:8,
-                  border:`1px solid ${partialSarkim ? col : THEME.border}`,
-                  background: partialSarkim ? alpha(col, 0.11) : THEME.panelBgStrong,
-                  opacity: (autoSarkım && !bulkLoad && manualOh === 15) ? 1 : 0.45,
-                  pointerEvents: (autoSarkım && !bulkLoad && manualOh === 15) ? "auto" : "none" }}>
-                  <input type="checkbox" checked={partialSarkim} onChange={e => setPartialSarkim(e.target.checked)}
-                    style={{ width:13, height:13, cursor:"pointer", accentColor:col }} />
-                  <span style={{ fontSize:11.5, color: partialSarkim ? col : THEME.textMuted, fontWeight: partialSarkim ? 800 : 500 }}>
-                    Parçalı Sarkım
-                  </span>
-                </label>
-                <div style={{ display:"flex", gap:6, opacity: (autoSarkım && partialSarkim && !bulkLoad && manualOh === 15) ? 1 : 0.45, pointerEvents: (autoSarkım && partialSarkim && !bulkLoad && manualOh === 15) ? "auto" : "none" }}>
-                  <button onClick={() => setPartialSarkimMode("fixed10")} style={{
+                <div style={{ display:"flex", gap:6, opacity: (autoSarkım && !bulkLoad && manualOh === 15) ? 1 : 0.45, pointerEvents: (autoSarkım && !bulkLoad && manualOh === 15) ? "auto" : "none" }}>
+                  <button
+                    onClick={() => setPartialSarkimMode("fixed10")}
+                    disabled={forceOverflowFor15}
+                    style={{
                     ...SEL, width:"auto", padding:"6px 10px", fontSize:11.5,
                     border:`1px solid ${partialSarkimMode === "fixed10" ? col : THEME.border}`,
                     background: partialSarkimMode === "fixed10" ? alpha(col, 0.13) : THEME.panelBgStrong,
-                    color: partialSarkimMode === "fixed10" ? col : THEME.textMuted
+                    color: partialSarkimMode === "fixed10" ? col : THEME.textMuted,
+                    opacity: forceOverflowFor15 ? 0.5 : 1,
+                    cursor: forceOverflowFor15 ? "not-allowed" : "pointer"
                   }}>
                     Fix 10cm
+                  </button>
+                  <button
+                    onClick={() => setPartialSarkimMode("fixed10OneWay")}
+                    disabled={forceOverflowFor15}
+                    style={{
+                    ...SEL, width:"auto", padding:"6px 10px", fontSize:11.5,
+                    border:`1px solid ${partialSarkimMode === "fixed10OneWay" ? col : THEME.border}`,
+                    background: partialSarkimMode === "fixed10OneWay" ? alpha(col, 0.13) : THEME.panelBgStrong,
+                    color: partialSarkimMode === "fixed10OneWay" ? col : THEME.textMuted,
+                    opacity: forceOverflowFor15 ? 0.5 : 1,
+                    cursor: forceOverflowFor15 ? "not-allowed" : "pointer"
+                  }}>
+                    Fix 10cm (Tek Yön)
                   </button>
                   <button onClick={() => setPartialSarkimMode("overflow")} style={{
                     ...SEL, width:"auto", padding:"6px 10px", fontSize:11.5,
@@ -2791,6 +2859,19 @@ export default function App() {
                     Taşma Kadar
                   </button>
                 </div>
+                <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:11.5, color:THEME.textMuted }}>
+                  <input
+                    type="checkbox"
+                    checked={forceOverflowFor15}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setForceOverflowFor15(checked);
+                      if (checked) setPartialSarkimMode("overflow");
+                    }}
+                    style={{ width:13, height:13, cursor:"pointer", accentColor:col }}
+                  />
+                  Taşma Kadarı En Optimalde Sabitle
+                </label>
               </div>
             </div>
           </div>
@@ -2849,7 +2930,7 @@ export default function App() {
                             {orientBest
                               ? orientBest.mode === "bulk"
                                 ? `${orientBest.count} kutu/yerleşim · ${orientBest.truckPallets} yerleşim/tır · ${orientBest.truckBoxes} kutu/tır · Dökme`
-                                : `${orientBest.count} kutu/palet · ${orientBest.truckPallets} palet/tır · ${orientBest.truckBoxes} kutu/tır · ${orientBest.pallet} · ${orientBest.oh === 0 ? "Sarkım yok" : `${orientBest.oh}cm`}`
+                                : `${orientBest.count} kutu/palet · ${orientBest.truckPallets} palet/tır · ${orientBest.truckBoxes} kutu/tır · ${orientBest.pallet} · ${formatSarkimExport(orientBest.oh, partialSarkim, optimalPartialSarkimMode)}`
                               : "Bu yön için limitlere uygun kombinasyon yok"}
                           </div>
                         </div>
