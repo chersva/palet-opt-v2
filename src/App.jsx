@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
+import * as XLSX from "xlsx-js-style";
 
 // ── CONSTANTS ──────────────────────────────────────────────────────────────
 const C30 = Math.cos(Math.PI / 6);
@@ -67,6 +68,36 @@ function safeRead(key, fallback) {
   }
 }
 
+function parseFlexibleNumber(raw) {
+  let s = String(raw ?? "").trim();
+  s = s.replace(/\s*(kg|g|cm|mm|m|ton|adet)\s*$/i, "").replace(/\s/g, "");
+  if (!s) return 0;
+  const hasDot = s.includes(".");
+  const hasComma = s.includes(",");
+  if (hasDot && hasComma) {
+    const lastComma = s.lastIndexOf(",");
+    const lastDot = s.lastIndexOf(".");
+    if (lastComma > lastDot) {
+      // 1.234,56 -> 1234.56
+      return parseFloat(s.replace(/\./g, "").replace(",", "."));
+    }
+    // 2,416.14 -> 2416.14
+    return parseFloat(s.replace(/,/g, ""));
+  }
+  if (hasComma) {
+    const parts = s.split(",");
+    // Ondalık virgül: 79,5 · 148,5 · 30,6
+    if (parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d{1,3}$/.test(parts[1])) {
+      return parseFloat(`${parts[0]}.${parts[1]}`);
+    }
+    // Binlik virgül: 2,416
+    if (/^-?\d{1,3}(,\d{3})+$/.test(s)) return parseFloat(s.replace(/,/g, ""));
+    return parseFloat(s.replace(",", "."));
+  }
+  if (hasDot) return parseFloat(s);
+  return parseFloat(s);
+}
+
 function overlap(a, b) {
   const eps = 0.01;
   return !(
@@ -102,127 +133,298 @@ function flatOrient(en, boy, yuk, orient = "A") {
 }
 
 // ── CSV PARSER ─────────────────────────────────────────────────────────────
-function parseCSV(text) {
-  const cleaned = text.replace(/^\uFEFF/, "").trim();
-  const lines = cleaned.split(/\r?\n/);
-  if (lines.length < 2) return [];
-  const delimCandidates = [",", ";", "\t", "|"];
-  const scoreDelim = (d) => {
-    const h = lines[0].split(d).length;
-    const r = (lines[1] || "").split(d).length;
-    return Math.max(h, r);
-  };
-  const delim = delimCandidates.reduce((best, d) => scoreDelim(d) > scoreDelim(best) ? d : best, ",");
-  const parseRow = (line) => {
-    const out = [];
-    let cur = "";
-    let inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === "\"") {
-        if (inQ && line[i + 1] === "\"") {
-          cur += "\"";
-          i++;
-        } else {
-          inQ = !inQ;
-        }
-        continue;
-      }
-      if (ch === delim && !inQ) {
-        out.push(cur.trim());
-        cur = "";
-      } else {
-        cur += ch;
-      }
-    }
-    out.push(cur.trim());
-    return out.map((v) => v.replace(/^"(.*)"$/, "$1").trim());
-  };
-  const norm = (s) => s
+function normHeader(s) {
+  return String(s ?? "")
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/ı/g, "i")
+    .replace(/ý/g, "i")
+    .replace(/Ý/g, "i")
+    .replace(/þ/g, "s")
+    .replace(/Þ/g, "s")
     .replace(/[^\w]+/g, " ")
     .trim();
-  const hdrs = parseRow(lines[0]).map(norm);
-  const fallbackIndexByName = (name) => {
-    const map = { en: 3, boy: 4, yuk: 5, kg: 6, sku: 1, parent: 0, paket: 2 };
-    return map[name] ?? -1;
-  };
-  const fi = (...kws) => {
-    for (const kw of kws) {
-      const kwl = norm(kw);
-      const i = hdrs.findIndex(h => {
-        const first = h.split(/\s+/)[0];
-        return first === kwl || h.includes(kwl);
-      });
-      if (i >= 0) return i;
-    }
-    return fallbackIndexByName(kws[0]);
-  };
-  const iP = fi("parent", "urun", "urun adi", "product", "name");
-  const iS = fi("sku", "kod", "stok kodu", "stock");
-  const iQ = fi("paket", "paket sayisi", "adet", "qty", "quantity");
-  const iE = fi("en", "genislik", "width");
-  const iB = fi("boy", "uzunluk", "length");
-  const iY = fi("yukseklik", "yuk", "height");
-  const iK = fi("kg", "agirlik", "weight");
-  const iF = fi("fiyat", "alis fiyati", "gercek alis fiyati", "price", "unit price");
-  return lines.slice(1)
-    .filter(l => l.trim())
-    .map((line, idx) => {
-      const v = parseRow(line);
-      const get = i => (i >= 0 ? v[i] : "") || "";
-      const num = (x) => {
-        const s = String(x).trim().replace(/\s/g, "");
-        if (!s) return 0;
-        if (s.includes(",") && s.includes(".")) {
-          // 1.234,56 or 1,234.56 -> normalize to dot decimal
-          const lastComma = s.lastIndexOf(",");
-          const lastDot = s.lastIndexOf(".");
-          if (lastComma > lastDot) return parseFloat(s.replace(/\./g, "").replace(",", "."));
-          return parseFloat(s.replace(/,/g, ""));
+}
+
+function headerMatches(hdr, alias, { exactOnly = false, shortToken = false, exclude = [] } = {}) {
+  if (!hdr || !alias) return false;
+  if (exclude.some((ex) => hdr.includes(ex))) return false;
+  if (hdr === alias) return true;
+  if (exactOnly || shortToken) return false;
+  if (alias.includes(" ")) return hdr === alias || hdr.startsWith(`${alias} `);
+  const first = hdr.split(/\s+/)[0];
+  return first === alias;
+}
+
+const CSV_COLUMN_SPECS = {
+  tedarikci: { aliases: ["tedarikci adi", "tedarikci", "supplier", "vendor", "uretici"] },
+  parent: { aliases: ["parent"], exactOnly: true },
+  name: { aliases: ["name", "urun adi", "product name", "title"], exclude: ["fiyat", "alis", "price"] },
+  sku: { aliases: ["sku", "stok kodu", "stock kodu", "kod"] },
+  paket: { aliases: ["paket sayisi", "paket", "adet", "qty", "quantity"] },
+  fiyat: { aliases: ["gercek alis fiyati", "alis fiyati", "gercek alis", "fiyat", "price", "unit price"] },
+  en: { aliases: ["en", "genislik", "width"], shortToken: true },
+  boy: { aliases: ["boy", "uzunluk", "length"], shortToken: true },
+  yuk: { aliases: ["yukseklik", "height"], exactOnly: true },
+  kg: { aliases: ["agirlik", "kg", "weight"] },
+};
+
+const CSV_LAYOUT_PROFILES = {
+  TAB_10: {
+    id: "TAB-10",
+    delim: "\t",
+    colCount: 10,
+    map: { tedarikci: 0, parent: 1, sku: 2, name: 3, fiyat: 4, paket: 5, en: 6, boy: 7, yuk: 8, kg: 9 },
+  },
+  SEMI_9: {
+    id: "SEMI-9",
+    delim: ";",
+    colCount: 9,
+    map: { tedarikci: 0, parent: 1, sku: 2, name: 3, fiyat: 4, en: 5, boy: 6, yuk: 7, kg: 8 },
+  },
+  SEMI_10: {
+    id: "SEMI-10",
+    delim: ";",
+    colCount: 10,
+    map: { tedarikci: 0, parent: 1, sku: 2, name: 3, fiyat: 4, paket: 5, en: 6, boy: 7, yuk: 8, kg: 9 },
+  },
+  LEGACY_7: {
+    id: "LEGACY-7",
+    delim: ",",
+    colCount: 7,
+    map: { parent: 0, sku: 1, paket: 2, en: 3, boy: 4, yuk: 5, kg: 6 },
+  },
+};
+
+function resolveColumnMapping(hdrs) {
+  const used = new Set();
+  const mapping = {};
+  for (const [field, spec] of Object.entries(CSV_COLUMN_SPECS)) {
+    let found = { index: -1, header: null, source: "none" };
+    for (const alias of spec.aliases) {
+      const kwl = normHeader(alias);
+      for (let i = 0; i < hdrs.length; i++) {
+        if (used.has(i)) continue;
+        const h = hdrs[i];
+        if (headerMatches(h, kwl, {
+          exactOnly: spec.exactOnly,
+          shortToken: spec.shortToken,
+          exclude: spec.exclude || [],
+        })) {
+          found = { index: i, header: hdrs[i], source: "header" };
+          used.add(i);
+          break;
         }
-        return parseFloat(s.replace(",", "."));
-      };
-      return {
-        sku:   get(iS) || `SKU-${idx + 1}`,
-        name:  get(iP) || get(iS) || `Ürün ${idx + 1}`,
-        qty:   parseInt(get(iQ))   || 0,
-        en:    num(get(iE)) || 0,
-        boy:   num(get(iB)) || 0,
-        yuk:   num(get(iY)) || 0,
-        kg:    num(get(iK)) || 0,
-        fiyat: num(get(iF)) || 0,
-      };
-    })
-    .filter(s => s.en > 0 && s.boy > 0 && s.yuk > 0);
+      }
+      if (found.index >= 0) break;
+    }
+    mapping[field] = found;
+  }
+  return mapping;
+}
+
+function pickLayoutProfile(delim, colCount) {
+  if (delim === "\t" && colCount === 10) return CSV_LAYOUT_PROFILES.TAB_10;
+  if (delim === ";" && colCount === 9) return CSV_LAYOUT_PROFILES.SEMI_9;
+  if (delim === ";" && colCount === 10) return CSV_LAYOUT_PROFILES.SEMI_10;
+  if (delim === "," && colCount === 7) return CSV_LAYOUT_PROFILES.LEGACY_7;
+  return null;
+}
+
+function applyLayoutProfile(mapping, profile) {
+  if (!profile) return mapping;
+  const next = { ...mapping };
+  const required = ["en", "boy", "yuk", "sku"];
+  const missingRequired = required.filter((k) => (next[k]?.index ?? -1) < 0);
+  if (missingRequired.length < 2) return next;
+  for (const [field, index] of Object.entries(profile.map)) {
+    next[field] = { index, header: `(profil ${profile.id})`, source: "profile" };
+  }
+  return next;
+}
+
+function buildSkuFromRow(v, mapping, idx) {
+  const get = (field) => {
+    const i = mapping[field]?.index ?? -1;
+    return i >= 0 ? String(v[i] ?? "").trim() : "";
+  };
+  const num = (x) => parseFlexibleNumber(x);
+  const parent = get("parent");
+  const displayName = get("name");
+  const name = displayName
+    ? (parent && displayName !== parent ? `${parent} · ${displayName}` : displayName)
+    : (parent || get("sku") || `Ürün ${idx + 1}`);
+  return {
+    tedarikci: get("tedarikci"),
+    parent,
+    displayName,
+    name,
+    sku: get("sku") || `SKU-${idx + 1}`,
+    qty: parseInt(get("paket"), 10) || 0,
+    en: num(get("en")) || 0,
+    boy: num(get("boy")) || 0,
+    yuk: num(get("yuk")) || 0,
+    kg: num(get("kg")) || 0,
+    fiyat: num(get("fiyat")) || 0,
+  };
+}
+
+function formatMappingSummary(mapping) {
+  const labels = {
+    tedarikci: "Tedarikçi",
+    parent: "Parent",
+    name: "NAME",
+    sku: "SKU",
+    fiyat: "Fiyat",
+    en: "En",
+    boy: "Boy",
+    yuk: "Yük",
+    kg: "Kg",
+  };
+  return Object.entries(labels)
+    .filter(([key]) => (mapping[key]?.index ?? -1) >= 0)
+    .map(([key, lbl]) => `${lbl}→${mapping[key].index + 1}`)
+    .join(", ");
+}
+
+function validateCsvImport(rows, mapping) {
+  const warnings = [];
+  if (!rows.length) {
+    warnings.push("Hiç geçerli satır okunamadı (En/Boy/Yükseklik > 0 olmalı).");
+    return warnings;
+  }
+  const priceLikeName = rows.filter((r) => /^\d+([.,]\d+)?$/.test(String(r.displayName || r.name || "").trim())).length;
+  if (priceLikeName > rows.length * 0.2) {
+    warnings.push("Ürün adı kolonu fiyat gibi görünüyor; kolon eşlemesini kontrol edin.");
+  }
+  const badDims = rows.filter((r) => r.en > 500 || r.boy > 500 || r.yuk > 500).length;
+  if (badDims > rows.length * 0.15) {
+    warnings.push("Ölçüler olağandışı büyük; kolon kayması olabilir.");
+  }
+  const enIdx = mapping.en?.index ?? -1;
+  const parentIdx = mapping.parent?.index ?? -1;
+  const nameIdx = mapping.name?.index ?? -1;
+  const fiyatIdx = mapping.fiyat?.index ?? -1;
+  if (enIdx >= 0 && enIdx === parentIdx) {
+    warnings.push("En kolonu Parent ile çakışıyor.");
+  }
+  if (nameIdx >= 0 && nameIdx === fiyatIdx) {
+    warnings.push("NAME kolonu fiyat kolonu ile çakışıyor.");
+  }
+  return warnings;
+}
+
+function splitCsvLine(line, delim) {
+  const out = [];
+  let cur = "";
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "\"") {
+      if (inQ && line[i + 1] === "\"") {
+        cur += "\"";
+        i++;
+      } else {
+        inQ = !inQ;
+      }
+      continue;
+    }
+    if (ch === delim && !inQ) {
+      out.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur.trim());
+  return out.map((v) => v.replace(/^"(.*)"$/, "$1").trim());
+}
+
+function parseCSV(text) {
+  const cleaned = text.replace(/^\uFEFF/, "").trim();
+  const lines = cleaned.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) {
+    return { rows: [], mapping: {}, warnings: ["Dosyada başlık veya veri satırı yok."], delim: ",", profileName: null };
+  }
+
+  const delimCandidates = ["\t", ";", ",", "|"];
+  const detectDelimiter = () => {
+    const sample = lines.slice(0, Math.min(12, lines.length));
+    let best = ",";
+    let bestScore = -1;
+    for (const d of delimCandidates) {
+      const counts = sample.map((line) => splitCsvLine(line, d).length);
+      const cols = counts[0] || 0;
+      if (cols < 2) continue;
+      if (!counts.every((c) => c === cols)) continue;
+      const score = cols * 100 + (d === "\t" ? 20 : 0) + (d === ";" ? 18 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = d;
+      }
+    }
+    if (bestScore < 0) {
+      const tabCols = (lines[0].match(/\t/g) || []).length + 1;
+      if (tabCols >= 5) return "\t";
+      const semiCols = (lines[0].match(/;/g) || []).length + 1;
+      if (semiCols >= 5) return ";";
+    }
+    return best;
+  };
+
+  const delim = detectDelimiter();
+  const parseRow = (line) => splitCsvLine(line, delim);
+  const hdrs = parseRow(lines[0]).map(normHeader);
+  const colCount = hdrs.length;
+
+  let mapping = resolveColumnMapping(hdrs);
+  const profile = pickLayoutProfile(delim, colCount);
+  let profileName = null;
+  const headerMappedCount = ["en", "boy", "yuk", "sku", "name", "fiyat"].filter((k) => mapping[k]?.source === "header").length;
+  if (headerMappedCount < 4 && profile) {
+    mapping = applyLayoutProfile(mapping, profile);
+    profileName = profile.id;
+  }
+
+  const rows = lines.slice(1)
+    .map((line, idx) => buildSkuFromRow(parseRow(line), mapping, idx))
+    .filter((s) => s.en > 0 && s.boy > 0 && s.yuk > 0);
+
+  const warnings = validateCsvImport(rows, mapping);
+  return { rows, mapping, warnings, delim, profileName };
 }
 
 function parseCSVLoose(text) {
+  const primary = parseCSV(text);
+  if (primary.rows.length) return primary;
+
   const cleaned = text.replace(/^\uFEFF/, "").trim();
   const lines = cleaned.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) return [];
-  const delim = (lines[0].includes(";") && !lines[0].includes(",")) ? ";" : ",";
-  const num = (x) => {
-    const s = String(x || "").trim().replace(/\s/g, "");
-    if (!s) return 0;
-    return parseFloat(s.replace(",", "."));
-  };
-  return lines.slice(1).map((line, idx) => {
+  if (lines.length < 2) {
+    return { rows: [], mapping: {}, warnings: ["Dosya boş."], delim: ",", profileName: null };
+  }
+
+  const tabCols = (lines[0].match(/\t/g) || []).length + 1;
+  const semiCols = (lines[0].match(/;/g) || []).length + 1;
+  const delim = tabCols >= 5 ? "\t" : (semiCols >= 5 ? ";" : ",");
+  const profile = pickLayoutProfile(delim, tabCols >= 5 ? tabCols : semiCols);
+  if (!profile) return primary;
+
+  const mapping = applyLayoutProfile(resolveColumnMapping([]), profile);
+  const num = (x) => parseFlexibleNumber(x);
+  const rows = lines.slice(1).map((line, idx) => {
     const v = line.split(delim).map((x) => x.trim());
-    return {
-      sku:   v[1] || `SKU-${idx + 1}`,
-      name:  v[0] || v[1] || `Ürün ${idx + 1}`,
-      qty:   parseInt(v[2]) || 0,
-      en:    num(v[3]),
-      boy:   num(v[4]),
-      yuk:   num(v[5]),
-      kg:    num(v[6]),
-      fiyat: num(v[7]) || 0,
-    };
+    return buildSkuFromRow(v, mapping, idx);
   }).filter((s) => s.en > 0 && s.boy > 0 && s.yuk > 0);
+
+  return {
+    rows,
+    mapping,
+    warnings: validateCsvImport(rows, mapping),
+    delim,
+    profileName: profile.id,
+  };
 }
 
 // ── SARKIM MODEL ────────────────────────────────────────────────────────────
@@ -347,6 +549,228 @@ function packTruck(eA, eB, truckL = TL, truckW = TW) {
     guill(eA, eB, false, eB, eA, true),
     guill(eB, eA, true,  eA, eB, false),
   ].reduce((b, o) => o.n > b.n ? o : b, { n: -1, pls: [] }).pls;
+}
+
+/** Tır yerleşiminde uzunluk (x) ve genişlik (y) eksenindeki palet adımları */
+function truckLayoutAlongAxes(pls) {
+  if (!pls?.length) return { alongL: 0, alongW: 0 };
+  const q = (v) => Math.round(v * 100) / 100;
+  const xs = new Set(pls.map((p) => q(p.x)));
+  const ys = new Set(pls.map((p) => q(p.y)));
+  return { alongL: xs.size, alongW: ys.size };
+}
+
+function formatSarkimExport(oh, partialSarkim, partialSarkimMode) {
+  if (oh === 0) return "Sarkım yok";
+  if (oh === 5) return "+5 cm (opsiyonel taşma)";
+  if (oh === 15) {
+    if (partialSarkim) {
+      return partialSarkimMode === "fixed10"
+        ? "15 cm · Parçalı · Fix 10 cm"
+        : "15 cm · Parçalı · Taşma kadar";
+    }
+    return "15 cm sarkım";
+  }
+  return `${oh} cm sarkım`;
+}
+
+/** Döviz → TL (kur: 1 birim döviz kaç TL) */
+function unitPriceToTlForExport(unitPrice, currency, kurTlPerUnit) {
+  if (!(unitPrice > 0)) return 0;
+  if (currency === "TL") return unitPrice;
+  if (Number.isFinite(kurTlPerUnit) && kurTlPerUnit > 0) return unitPrice * kurTlPerUnit;
+  return 0;
+}
+
+/** Excel maliyet kolonları — UI ile aynı kur mantığı */
+function resolveExportCostUnitPrice(unitPrice, currency, { useKur, kurVal, kurType }) {
+  if (!(unitPrice > 0)) return { unitPrice: 0, currency: "TL" };
+  if (useKur) {
+    const fx = kurType === "EUR" ? "EUR" : "USD";
+    if (currency === "TL") {
+      if (Number.isFinite(kurVal) && kurVal > 0) {
+        return { unitPrice: unitPrice / kurVal, currency: fx };
+      }
+      return { unitPrice: 0, currency: fx };
+    }
+    return { unitPrice, currency: currency === "EUR" ? "EUR" : "USD" };
+  }
+  return { unitPrice: unitPriceToTlForExport(unitPrice, currency, kurVal), currency: "TL" };
+}
+
+/**
+ * UI’daki orientGlobalBest ile aynı paletli optimal (tek yön).
+ * Dökme modu bu raporda yok — her zaman paletli senaryo.
+ */
+function optimalPalletLoadForOrient(sku, orient, opts) {
+  const {
+    allPallets,
+    effectivePalletProductLimit,
+    livePalletMaxKg,
+    livePalletMaxH,
+    livePalletBaseH,
+    liveTruckH,
+    truckTonKg,
+    truckL,
+    truckW,
+    autoSarkım,
+    partialSarkim,
+    partialSarkimMode,
+  } = opts;
+  const en = sku?.en || 0, boy = sku?.boy || 0, yuk = sku?.yuk || 0, kg = sku?.kg || 0;
+  const { bH: tH, bW: tW, bL: tL } = flatOrient(en, boy, yuk, orient);
+  let best = null;
+  const ohOptions = autoSarkım ? [0, 5, 15] : [0];
+  for (const p of allPallets) {
+    for (const ohOpt of ohOptions) {
+      const packed = packPallet(
+        tL, tW, tH,
+        p.a, p.b, ohOpt,
+        effectivePalletProductLimit,
+        livePalletMaxKg,
+        kg,
+        livePalletBaseH,
+        partialSarkim,
+        partialSarkimMode
+      );
+      const pls = packTruck(packed.effA, packed.effB, truckL, truckW);
+      const truckPallets = pls.length;
+      const perLayerCount = packed.cols * packed.rows;
+      if (perLayerCount <= 0) continue;
+      const maxLayersByTruckTon = kg > 0 && truckPallets > 0
+        ? Math.floor(truckTonKg / (truckPallets * perLayerCount * kg))
+        : Number.MAX_SAFE_INTEGER;
+      const candidateLayers = Math.max(0, Math.min(packed.layers, maxLayersByTruckTon));
+      const count = perLayerCount * candidateLayers;
+      if (count <= 0) continue;
+      const candidateKg = count * kg;
+      const candidateProductH = candidateLayers * tH;
+      const candidateTruckKg = candidateKg * truckPallets;
+      const candidateTotalH = livePalletBaseH + candidateProductH;
+      const fits = (
+        candidateProductH <= livePalletMaxH &&
+        candidateKg <= livePalletMaxKg &&
+        candidateTotalH <= liveTruckH &&
+        candidateTruckKg <= truckTonKg
+      );
+      if (!fits) continue;
+      const truckBoxes = truckPallets * count;
+      const candidate = {
+        orient,
+        pallet: p.label,
+        oh: ohOpt,
+        cols: packed.cols,
+        rows: packed.rows,
+        layers: candidateLayers,
+        countPerPallet: count,
+        truckPallets,
+        truckBoxes,
+        effA: packed.effA,
+        effB: packed.effB,
+        bL: tL,
+        bW: tW,
+        bH: tH,
+        pls,
+      };
+      if (!best || candidate.truckBoxes > best.truckBoxes) best = candidate;
+    }
+  }
+  return best;
+}
+
+function dolulukFromOptimal(candidate, truckL, truckW, liveTruckH, livePalletBaseH) {
+  if (!candidate) {
+    return {
+      totalM2: "",
+      doluM2: "",
+      bosM2: "",
+      totalM3: "",
+      doluM3: "",
+      bosM3: "",
+    };
+  }
+  const totalM2 = (truckL * truckW) / 10000;
+  const nPal = candidate.truckPallets;
+  const doluM2 = (nPal * candidate.effA * candidate.effB) / 10000;
+  const bosM2 = Math.max(0, totalM2 - doluM2);
+  const totalM3 = (truckL * truckW * liveTruckH) / 1_000_000;
+  const volBox = candidate.bL * candidate.bW * candidate.bH;
+  const totalBoxVol = (candidate.truckBoxes * volBox) / 1_000_000;
+  const baseVol = (nPal * candidate.effA * candidate.effB * livePalletBaseH) / 1_000_000;
+  const doluM3 = totalBoxVol + baseVol;
+  const bosM3 = Math.max(0, totalM3 - doluM3);
+  const r4 = (n) => Number(n.toFixed(4));
+  return {
+    totalM2: r4(totalM2),
+    doluM2: r4(doluM2),
+    bosM2: r4(bosM2),
+    totalM3: r4(totalM3),
+    doluM3: r4(doluM3),
+    bosM3: r4(bosM3),
+  };
+}
+
+function summarizePalletConfig(cand, partialSarkim, partialSarkimMode) {
+  if (!cand) return "—";
+  return `${cand.pallet}; ${formatSarkimExport(cand.oh, partialSarkim, partialSarkimMode)}`;
+}
+
+function palletDetailLine(cand) {
+  if (!cand) return "—";
+  return `${cand.countPerPallet} kutu; dizilim ${cand.cols} × ${cand.rows} × ${cand.layers}`;
+}
+
+function truckDetailLine(cand) {
+  if (!cand) return "—";
+  const { alongL, alongW } = truckLayoutAlongAxes(cand.pls);
+  return `${cand.truckPallets} palet; dizilim ${alongL} × ${alongW}`;
+}
+
+/** Excel export: A/B/C arasında en yüksek tır kapasitesi (UI bestFit ile aynı skor) */
+function exportCandidateScore(cand, skuKg) {
+  const productH = (cand.layers || 0) * (cand.bH || 0);
+  const palletKg = (cand.countPerPallet || 0) * (skuKg || 0);
+  return [cand.truckBoxes || 0, cand.countPerPallet || 0, -productH, -palletKg];
+}
+
+function pickBestExportOrient(candidatesByOrient, skuKg) {
+  let bestOrient = null;
+  let bestCand = null;
+  for (const orient of ["A", "B", "C"]) {
+    const cand = candidatesByOrient[orient];
+    if (!cand) continue;
+    if (!bestCand) {
+      bestOrient = orient;
+      bestCand = cand;
+      continue;
+    }
+    const cur = exportCandidateScore(bestCand, skuKg);
+    const next = exportCandidateScore(cand, skuKg);
+    for (let i = 0; i < next.length; i++) {
+      if (next[i] > cur[i]) {
+        bestOrient = orient;
+        bestCand = cand;
+        break;
+      }
+      if (next[i] < cur[i]) break;
+    }
+  }
+  return bestOrient;
+}
+
+const EXPORT_ORIENT_COL_START = { A: 9, B: 14, C: 19 };
+const EXPORT_ORIENT_BLOCK_COLS = 5;
+const EXCEL_OPTIMAL_FILL = { patternType: "solid", fgColor: { rgb: "FFFF00" } };
+
+function highlightExportOptimalRow(ws, sheetRow, orient) {
+  if (!orient) return;
+  const col0 = EXPORT_ORIENT_COL_START[orient];
+  for (let dc = 0; dc < EXPORT_ORIENT_BLOCK_COLS; dc++) {
+    const addr = XLSX.utils.encode_cell({ r: sheetRow, c: col0 + dc });
+    const cell = ws[addr];
+    if (!cell) continue;
+    cell.s = { fill: EXCEL_OPTIMAL_FILL };
+  }
 }
 
 // ── ISO HELPERS ────────────────────────────────────────────────────────────
@@ -1221,7 +1645,7 @@ export default function App() {
   const [manualPriceInput, setManualPriceInput] = useState("");
   const [manualPriceCurrency, setManualPriceCurrency] = useState("TL");
   const fRef = useRef();
-  const parseNum = (v) => parseFloat(String(v ?? "").trim().replace(",", "."));
+  const parseNum = (v) => parseFlexibleNumber(v);
 
   const allPallets = useMemo(
     () => [
@@ -1238,13 +1662,22 @@ export default function App() {
     const r = new FileReader();
     r.onload = ev => {
       try {
-        let parsed = parseCSV(ev.target.result);
-        if (!parsed.length) parsed = parseCSVLoose(ev.target.result);
-        if (!parsed.length) { setMsg("⚠ CSV boş ya da format tanınamadı."); return; }
-        setBaseSkus(parsed.map((s, i) => ({ ...s, _id: `csv-${i}-${s.sku}` })));
+        let result = parseCSV(ev.target.result);
+        if (!result.rows.length) result = parseCSVLoose(ev.target.result);
+        if (!result.rows.length) {
+          const warn = result.warnings?.[0] || "CSV boş ya da format tanınamadı.";
+          setMsg(`⚠ ${warn}`);
+          return;
+        }
+        setBaseSkus(result.rows.map((s, i) => ({ ...s, _id: `csv-${i}-${s.sku}` })));
         setSkuI(0);
         setIsDemo(false);
-        setMsg(`✓ ${parsed.length} SKU yüklendi.`);
+        const mapSummary = formatMappingSummary(result.mapping);
+        let msgText = `✓ ${result.rows.length} SKU yüklendi`;
+        if (mapSummary) msgText += ` · ${mapSummary}`;
+        if (result.profileName) msgText += ` · profil ${result.profileName}`;
+        if (result.warnings?.length) msgText += ` · ${result.warnings.join(" ")}`;
+        setMsg(msgText);
       } catch { setMsg("✗ Dosya okunamadı."); }
     };
     r.readAsText(f, "UTF-8");
@@ -1622,6 +2055,154 @@ export default function App() {
                  msg.startsWith("⚠") ? "rgba(252,211,77,0.08)" : "rgba(248,113,113,0.08)";
   const INPUT_COMMON = { ...SEL, padding: "6px 10px" };
 
+  const handleExportExcel = () => {
+    try {
+      if (!skus.length) {
+        setMsg("⚠ Dışa aktarılacak ürün yok.");
+        return;
+      }
+      const exportCtx = {
+        allPallets,
+        effectivePalletProductLimit,
+        livePalletMaxKg,
+        livePalletMaxH,
+        livePalletBaseH,
+        liveTruckH,
+        truckTonKg,
+        truckL: liveTruckL,
+        truckW: liveTruckW,
+        autoSarkım,
+        partialSarkim,
+        partialSarkimMode,
+      };
+      const kurVal = parseNum(kurInput);
+      const manualU = Math.max(0, parseNum(manualPriceInput) || 0);
+      const exportCostCurrency = useKur && Number.isFinite(kurVal) && kurVal > 0
+        ? (kurType === "EUR" ? "EUR" : "USD")
+        : "TL";
+      const costSuffix = `(${exportCostCurrency})`;
+      const hdr = [
+        "Tedarikçi",
+        "Parent",
+        "SKU",
+        "Ürün Adı (NAME)",
+        "En (cm)",
+        "Boy (cm)",
+        "Yükseklik (cm)",
+        "Ağırlık (kg)",
+        "Gerçek Alış Fiyatı",
+        "A Palet özeti",
+        "A Palet kutu/dizilim",
+        "A Tır yerleşim",
+        `A Palet maliyeti ${costSuffix}`,
+        `A Tır maliyeti ${costSuffix}`,
+        "B Palet özeti",
+        "B Palet kutu/dizilim",
+        "B Tır yerleşim",
+        `B Palet maliyeti ${costSuffix}`,
+        `B Tır maliyeti ${costSuffix}`,
+        "C Palet özeti",
+        "C Palet kutu/dizilim",
+        "C Tır yerleşim",
+        `C Palet maliyeti ${costSuffix}`,
+        `C Tır maliyeti ${costSuffix}`,
+        "A Dolu m²",
+        "A Dolu m³",
+        "B Dolu m²",
+        "B Dolu m³",
+        "C Dolu m²",
+        "C Dolu m³",
+      ];
+      const bestOrients = [];
+      const dataRows = skus.map((rowSku) => {
+        const skuCsvFiyat = rowSku?.fiyat || 0;
+        // CSV'de fiyat varsa her zaman onu kullan; manuel fiyat sadece CSV'siz SKU fallback'i.
+        const actualPrice = skuCsvFiyat > 0 ? skuCsvFiyat : manualU;
+        const priceCurrency = skuCsvFiyat > 0 ? "TL" : manualPriceCurrency;
+        const priceLabel = actualPrice > 0
+          ? `${actualPrice} ${priceCurrency === "USD" ? "USD" : priceCurrency === "EUR" ? "EUR" : "TL"}`
+          : "—";
+        const { unitPrice: costUnitPrice } = resolveExportCostUnitPrice(
+          actualPrice,
+          priceCurrency,
+          { useKur, kurVal, kurType }
+        );
+
+        const cA = optimalPalletLoadForOrient(rowSku, "A", exportCtx);
+        const cB = optimalPalletLoadForOrient(rowSku, "B", exportCtx);
+        const cC = optimalPalletLoadForOrient(rowSku, "C", exportCtx);
+
+        const costCells = [cA, cB, cC].flatMap((cand) => {
+          const cols = cand
+            ? [
+                summarizePalletConfig(cand, partialSarkim, partialSarkimMode),
+                palletDetailLine(cand),
+                truckDetailLine(cand),
+              ]
+            : ["—", "—", "—"];
+          if (!(costUnitPrice > 0) || !cand) return [...cols, "—", "—"];
+          return [
+            ...cols,
+            +(costUnitPrice * cand.countPerPallet).toFixed(2),
+            +(costUnitPrice * cand.truckBoxes).toFixed(2),
+          ];
+        });
+
+        const doluCells = [cA, cB, cC].flatMap((cand) => {
+          const d = dolulukFromOptimal(cand, liveTruckL, liveTruckW, liveTruckH, livePalletBaseH);
+          if (!cand) return ["—", "—"];
+          return [d.doluM2, d.doluM3];
+        });
+
+        bestOrients.push(pickBestExportOrient({ A: cA, B: cB, C: cC }, rowSku.kg || 0));
+
+        return [
+          rowSku.tedarikci || "",
+          rowSku.parent || "",
+          rowSku.sku,
+          rowSku.displayName || rowSku.name,
+          rowSku.en,
+          rowSku.boy,
+          rowSku.yuk,
+          rowSku.kg,
+          priceLabel,
+          ...costCells,
+          ...doluCells,
+        ];
+      });
+
+      const truckTotalM2 = (liveTruckL * liveTruckW) / 10000;
+      const truckTotalM3 = (liveTruckL * liveTruckW * liveTruckH) / 1_000_000;
+      const wb = XLSX.utils.book_new();
+      const info = [
+        [`Rapor tarihi (export anı)`, new Date().toLocaleString("tr-TR")],
+        [`Senaryo`, "Paletli optimal (CSV’deki tüm SKUlar; A/B/C ayrı). Dökme modu bu çıktıyı etkilemez."],
+        [`Tır ölçüleri (cm)`, `${liveTruckL} × ${liveTruckW} × ${liveTruckH}`],
+        [`Tır alanı (m²)`, +truckTotalM2.toFixed(4)],
+        [`Tır hacmi (m³)`, +truckTotalM3.toFixed(4)],
+        [`Tır tonaj (ton)`, liveTruckTon],
+        [`Palet limit`, `Ürün max ${livePalletMaxH} cm · max ${livePalletMaxKg} kg · taban ${livePalletBaseH} cm`],
+        [`Otomatik sarkım seçenekleri`, autoSarkım ? "0 / 5 / 15 cm" : "Kapalı (yalnız 0 cm)"],
+        [`Parçalı sarkım (15 cm)`, `${partialSarkim ? `Açık (${partialSarkimMode})` : "Kapalı"}`],
+        [`Maliyet para birimi`, exportCostCurrency],
+        ...(useKur && Number.isFinite(kurVal) && kurVal > 0
+          ? [[`Güncel kur (1 ${kurType} = … TL)`, `${kurVal} TL`]]
+          : []),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(info), "Özet");
+
+      const wsProducts = XLSX.utils.aoa_to_sheet([hdr, ...dataRows]);
+      bestOrients.forEach((orient, i) => highlightExportOptimalRow(wsProducts, i + 1, orient));
+      XLSX.utils.book_append_sheet(wb, wsProducts, "Ürünler");
+
+      const fn = `palet-opt-export-${new Date().toISOString().slice(0, 10)}-${Date.now().toString(36)}.xlsx`;
+      XLSX.writeFile(wb, fn);
+      setMsg(`✓ Excel indirildi (${skus.length} satır)`);
+    } catch {
+      setMsg("✗ Excel oluşturulamadı.");
+    }
+  };
+
   const commitMaxH = () => {
     if (useDefaultLimits) {
       setMaxHInput(String(DEFAULT_MAX_H));
@@ -1754,10 +2335,13 @@ export default function App() {
       setMsg("⚠ Ürün için en, boy, yükseklik ve kg değerlerini doğru girin.");
       return;
     }
+    const displayName = (newSku.name || "Manuel Ürün").trim();
     const item = {
       _id: uid("custom-sku"),
       sku: (newSku.sku || `MAN-${customSkus.length + 1}`).trim(),
-      name: (newSku.name || "Manuel Ürün").trim(),
+      parent: "",
+      displayName,
+      name: displayName,
       en, boy, yuk, kg, qty, fiyat: Number.isFinite(fiyat) && fiyat > 0 ? fiyat : 0,
       persist: newSku.mode === "persistent",
     };
@@ -1866,6 +2450,7 @@ export default function App() {
       <div style={{ display:"flex", gap:10, marginBottom:12, flexWrap:"wrap", alignItems:"flex-end" }}>
         <div style={{ flexShrink:0 }}>
           <span style={SL}>CSV Yükle</span>
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
           <button onClick={() => fRef.current && fRef.current.click()}
             style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 15px",
               background:"linear-gradient(135deg,#1A4FA0,#2563EB)", border:"none",
@@ -1873,6 +2458,18 @@ export default function App() {
               fontWeight:700, whiteSpace:"nowrap", boxShadow:"0 2px 8px rgba(37,99,235,0.3)" }}>
             📂 Dosya Seç
           </button>
+          <button type="button" onClick={handleExportExcel}
+            disabled={!skus.length}
+            title="Liste ve mevcut tır/limit ayarlarıyla paletli A/B/C optimal raporu (.xlsx)"
+            style={{
+              display:"flex", alignItems:"center", gap:6, padding:"9px 15px",
+              background:!skus.length ? THEME.panelBgStrong : "linear-gradient(135deg,#0F766E,#14B8A6)",
+              border:`1px solid ${THEME.border}`, borderRadius:8, color:!skus.length ? THEME.dim : "white",
+              fontSize:13, cursor:!skus.length ? "not-allowed" : "pointer", fontWeight:700, whiteSpace:"nowrap",
+            }}>
+            📊 Excel’e Aktar
+          </button>
+          </div>
           <input ref={fRef} type="file" accept=".csv" style={{ display:"none" }} onChange={handleFile} />
           <div style={{ fontSize:11.5, color:THEME.textSubtle, marginTop:5, maxWidth:180 }}>
             Parent, SKU, PAKET SAYISI,<br/>En, Boy, Yukseklik, KG Agirlik
